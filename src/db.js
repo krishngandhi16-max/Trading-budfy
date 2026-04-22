@@ -55,12 +55,33 @@ const PHASE3_MIGRATIONS = [
   `ALTER TABLE trades ADD COLUMN IF NOT EXISTS broker_meta     JSONB`,
 ];
 
+// Phase 4 migration: intelligence layer tables and columns.
+const CREATE_SHADOW_RUNS_TABLE = `
+  CREATE TABLE IF NOT EXISTS shadow_runs (
+    id            SERIAL PRIMARY KEY,
+    run_id        VARCHAR(40)    NOT NULL UNIQUE,
+    run_at        TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+    symbol_count  INTEGER        NOT NULL DEFAULT 0,
+    total_trades  INTEGER        NOT NULL DEFAULT 0,
+    total_wins    INTEGER        NOT NULL DEFAULT 0,
+    win_rate      NUMERIC(6, 4),
+    avg_r         NUMERIC(8, 4),
+    profit_factor NUMERIC(8, 4),
+    weights_after JSONB,
+    errors        JSONB
+  );
+`;
+
+const PHASE4_MIGRATIONS = [
+  CREATE_SHADOW_RUNS_TABLE,
+];
+
 async function initDb() {
   const client = await pool.connect();
   try {
     await client.query(CREATE_PT_ACCOUNT_TABLE);
     await client.query(CREATE_TRADES_TABLE);
-    for (const sql of [...PHASE2_MIGRATIONS, ...PHASE3_MIGRATIONS]) {
+    for (const sql of [...PHASE2_MIGRATIONS, ...PHASE3_MIGRATIONS, ...PHASE4_MIGRATIONS]) {
       await client.query(sql);
     }
     console.log('Database tables initialized');
