@@ -49,12 +49,18 @@ const PHASE2_MIGRATIONS = [
   `ALTER TABLE trades ADD COLUMN IF NOT EXISTS learning_flags JSONB`,
 ];
 
+// Phase 3 migration: broker integration columns.
+const PHASE3_MIGRATIONS = [
+  `ALTER TABLE trades ADD COLUMN IF NOT EXISTS broker_order_id VARCHAR(100)`,
+  `ALTER TABLE trades ADD COLUMN IF NOT EXISTS broker_meta     JSONB`,
+];
+
 async function initDb() {
   const client = await pool.connect();
   try {
     await client.query(CREATE_PT_ACCOUNT_TABLE);
     await client.query(CREATE_TRADES_TABLE);
-    for (const sql of PHASE2_MIGRATIONS) {
+    for (const sql of [...PHASE2_MIGRATIONS, ...PHASE3_MIGRATIONS]) {
       await client.query(sql);
     }
     console.log('Database tables initialized');

@@ -1,5 +1,5 @@
 /**
- * Phase 2 — Auto-close logic
+ * Phase 2/3 — Auto-close logic
  *
  * Three close triggers (checked in priority order per trade):
  *   1. TP hit (price reaches takeProfit)          → close at full 2R profit
@@ -11,11 +11,14 @@
  *   open  →  [price hits +1.5R]  →  SL moves to entry (breakeven)
  *         →  [price hits +2R=TP] →  trade closes at full profit
  *         →  [price pulls back to entry after trail] → closes at breakeven
+ *
+ * Phase 3 addition: broker close is fired (best-effort) for every local close.
  */
 
-const { pool }               = require('./db');
+const { pool }                              = require('./db');
 const { readPaperTrades, writePaperTrades } = require('./tradeEntry');
-const { attachLearningFlags }              = require('./learningFlags');
+const { attachLearningFlags }               = require('./learningFlags');
+const broker                                = require('./brokers/router');
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
 
@@ -128,6 +131,7 @@ async function dbUpdateAccountBalance(pnl) {
 
 /**
  * Mutates allTrades[idx] to closed state and persists to disk + DB.
+ * Also fires a best-effort broker position close (Phase 3).
  */
 async function closeTrade(trade, idx, allTrades, exitPrice, reason) {
   const pnl         = computePnl(trade, exitPrice);
@@ -146,6 +150,13 @@ async function closeTrade(trade, idx, allTrades, exitPrice, reason) {
 
   await dbCloseTrade(trade.dbId, exitPrice, pnl, reason, closedTrade.learningFlags);
   await dbUpdateAccountBalance(pnl);
+
+  // Phase 3: close at broker (best-effort, phantom_cleanup skips broker)
+  if (reason !== 'phantom_cleanup') {
+    broker.closePosition(trade.symbol, trade.marketType).catch((err) =>
+      console.warn(`[tradeClose] Broker close failed for ${trade.symbol}: ${err.message}`)
+    );
+  }
 
   return closedTrade;
 }

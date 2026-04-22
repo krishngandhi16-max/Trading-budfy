@@ -1,18 +1,20 @@
 /**
- * Phase 2 — Paper trade entry
+ * Phase 2/3 — Paper trade entry
  *
  * Pipeline:
  *   1. Score signals  →  2. Run 13 gates  →  3. Size position
  *   →  4. Write to DB  →  5. Write to paper_trades.json
+ *   →  6. Submit to broker (Phase 3, best-effort, disabled in DEV)
  */
 
 const fs   = require('fs');
 const path = require('path');
 
-const { pool }             = require('./db');
+const { pool }              = require('./db');
 const { calculatePosition } = require('./position');
 const { runAllGates }       = require('./gates');
 const { scoreSignals }      = require('./scoring');
+const broker                = require('./brokers/router');
 
 const PAPER_TRADES_PATH = path.resolve(__dirname, '../data/paper_trades.json');
 
@@ -130,25 +132,27 @@ async function enterTrade({ symbol, marketType, direction, entryPrice, stopLossP
     marketType,
     direction,
     entryPrice,
-    stopLoss:    position.stopLoss,
-    takeProfit:  position.takeProfit,
-    trailingSL:  position.stopLoss,   // tracks current active SL; moves to entry at +1.5R
-    quantity:    position.quantity,
-    riskAmount:  position.riskAmount,
-    riskPct:     position.riskPct,
-    riskPerUnit: position.riskPerUnit,
-    confidence:  score.confidence,
-    bias:        score.bias,
+    stopLoss:      position.stopLoss,
+    takeProfit:    position.takeProfit,
+    trailingSL:    position.stopLoss,   // tracks current active SL; moves to entry at +1.5R
+    quantity:      position.quantity,
+    riskAmount:    position.riskAmount,
+    riskPct:       position.riskPct,
+    riskPerUnit:   position.riskPerUnit,
+    confidence:    score.confidence,
+    bias:          score.bias,
     signals,
-    status:      'open',
-    openedAt:    now,
-    closedAt:    null,
-    exitPrice:   null,
-    pnl:         null,
-    closeReason: null,
+    status:        'open',
+    openedAt:      now,
+    closedAt:      null,
+    exitPrice:     null,
+    pnl:           null,
+    closeReason:   null,
     learningFlags: null,
-    milestones:  { trailActivated: false },
-    dbId:        null,
+    milestones:    { trailActivated: false },
+    dbId:          null,
+    brokerOrderId: null,
+    brokerMeta:    null,
   };
 
   // ── Step 5a: Write to DB ──────────────────────────────────────────────────
@@ -183,13 +187,52 @@ async function enterTrade({ symbol, marketType, direction, entryPrice, stopLossP
   all.push(trade);
   writePaperTrades(all);
 
+  // ── Step 6: Submit to broker (Phase 3, best-effort, no-op in DEV) ─────────
+  let brokerResult = null;
+  try {
+    // FIFO guard runs inside broker.submitOrder and will throw on violation
+    brokerResult = await broker.submitOrder({
+      symbol,
+      marketType,
+      direction,
+      quantity: position.quantity,
+    });
+
+    // Persist broker order ID back to the trade record
+    if (brokerResult && !brokerResult.mocked && !brokerResult.skipped) {
+      // Alpaca orders use 'id'; Oanda fill transactions use 'id' on the fill
+      trade.brokerOrderId = brokerResult.id || brokerResult.orderID || null;
+      trade.brokerMeta    = brokerResult;
+
+      // Update the JSON record we just wrote
+      const updated = readPaperTrades();
+      const idx     = updated.length - 1;    // we just pushed it
+      updated[idx]  = trade;
+      writePaperTrades(updated);
+
+      // Update DB if we have a row
+      if (trade.dbId) {
+        pool.query(
+          'UPDATE trades SET broker_order_id = $1, broker_meta = $2 WHERE id = $3',
+          [trade.brokerOrderId, JSON.stringify(brokerResult), trade.dbId]
+        ).catch((e) => console.warn('[tradeEntry] broker_order_id DB update failed:', e.message));
+      }
+    }
+  } catch (err) {
+    // FIFO violation or network error — log but don't roll back the paper trade
+    console.warn(`[tradeEntry] Broker submit failed for ${symbol}: ${err.message}`);
+    trade.brokerMeta = { error: err.message };
+  }
+
   return {
-    entered:  true,
+    entered:      true,
     trade,
-    dbId:     trade.dbId,
+    dbId:         trade.dbId,
+    brokerOrderId: trade.brokerOrderId,
+    brokerResult,
     position,
     score,
-    gates:    gateResult.results,
+    gates:        gateResult.results,
   };
 }
 
