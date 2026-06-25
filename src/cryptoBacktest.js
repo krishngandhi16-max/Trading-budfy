@@ -174,9 +174,13 @@ function print(symbol, stats, bars) {
   console.log(`  Starting equity: $100,000 | Risk: 1%/trade | Long-only`);
 }
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 (async () => {
   console.log('Fetching Alpaca bars and running UT Bot + EMA100 backtest...\n');
-  for (const sym of SYMBOLS) {
+  for (let i = 0; i < SYMBOLS.length; i++) {
+    if (i > 0) { process.stdout.write('  Waiting 10s to avoid rate limit...'); await sleep(10_000); console.log(' done'); }
+    const sym = SYMBOLS[i];
     process.stdout.write(`  Fetching ${sym}...`);
     try {
       const bars = await fetchAllBars(sym);
