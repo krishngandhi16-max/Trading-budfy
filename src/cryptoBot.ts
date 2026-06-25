@@ -36,7 +36,7 @@ const SYMBOLS: { base: string; alpaca: string }[] = [
   { base: "SOL", alpaca: "SOL/USD" },
 ];
 
-const SCAN_INTERVAL_MS = 60_000; // 1-minute scan
+const SCAN_INTERVAL_MS = 5 * 60_000; // 5-minute scan
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
