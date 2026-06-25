@@ -214,11 +214,14 @@ function calcUTBot(bars: Bar[], atr: number[]): UTBotResult[] {
 
 // ── Position sizing ───────────────────────────────────────────────────────────
 
+const MAX_ORDER_NOTIONAL = 195_000; // Alpaca paper cap is $200k; stay under with margin
+
 function calcQty(equity: number, price: number, stopDist: number, symbol: string): number {
   if (stopDist <= 0) return 0;
-  const byRisk = (equity * RISK_PCT) / stopDist;
-  const byCap  = (equity * 0.25) / price;
-  const raw = Math.min(byRisk, byCap);
+  const byRisk     = (equity * RISK_PCT) / stopDist;
+  const byCap      = (equity * 0.25) / price;
+  const byNotional = MAX_ORDER_NOTIONAL / price;
+  const raw = Math.min(byRisk, byCap, byNotional);
   if (symbol.includes("BTC")) return Math.floor(raw * 1e8) / 1e8;
   if (symbol.includes("ETH")) return Math.floor(raw * 1e6) / 1e6;
   return Math.floor(raw * 1e2) / 1e2;
@@ -256,35 +259,6 @@ async function placeLong(alpacaSym: string, qty: number, price: number, stopDist
   });
 }
 
-async function placeShort(alpacaSym: string, qty: number, price: number, stopDist: number): Promise<void> {
-  const sl = Math.round((price + stopDist) * 100) / 100;
-  logger.info({ symbol: alpacaSym, side: "SHORT", qty, price, sl, tp: "flip-only" }, "Crypto order");
-
-  // Step 1: market entry
-  await apiFetch(`${BROKER_BASE}/orders`, {
-    method: "POST",
-    body: JSON.stringify({
-      symbol:        alpacaSym,
-      qty:           String(qty),
-      side:          "sell",
-      type:          "market",
-      time_in_force: "gtc",
-    }),
-  });
-
-  // Step 2: stop loss only — no take profit
-  await apiFetch(`${BROKER_BASE}/orders`, {
-    method: "POST",
-    body: JSON.stringify({
-      symbol:        alpacaSym,
-      qty:           String(qty),
-      side:          "buy",
-      type:          "stop",
-      time_in_force: "gtc",
-      stop_price:    String(sl),
-    }),
-  });
-}
 
 async function closePosition(alpacaSym: string): Promise<void> {
   logger.info({ symbol: alpacaSym }, "Closing position");
@@ -341,18 +315,13 @@ async function scanSymbol(
   }, "Scan result");
 
   // ── Exit logic ─────────────────────────────────────────────────────────────
-  // Exits fire regardless of whether we own the position (broker handles it)
   if (isOpen) {
-    const longExit  = bearFlip || !aboveEma;
-    const shortExit = bullFlip || aboveEma;
-
-    // Determine current side from state
     const pos = state.openPositions.find((p) => p.symbol === sym.alpaca);
-    if (pos?.side === "long"  && longExit)  { await closePosition(sym.alpaca); return; }
-    if (pos?.side === "short" && shortExit) { await closePosition(sym.alpaca); return; }
+    const longExit = bearFlip || !aboveEma;
+    if (pos?.side === "long" && longExit) { await closePosition(sym.alpaca); return; }
   }
 
-  // ── Entry logic ────────────────────────────────────────────────────────────
+  // ── Entry logic — long only (Alpaca paper does not support crypto shorts) ──
   if (isOpen || qty <= 0) return;
 
   if (bullFlip && aboveEma) {
@@ -360,13 +329,6 @@ async function scanSymbol(
     state.openPositions.push({
       symbol: sym.alpaca, side: "long", entryPrice: price,
       qty, sl: Math.round((price - stopDist) * 100) / 100,
-      openedAt: new Date().toISOString(),
-    });
-  } else if (bearFlip && !aboveEma) {
-    await placeShort(sym.alpaca, qty, price, stopDist);
-    state.openPositions.push({
-      symbol: sym.alpaca, side: "short", entryPrice: price,
-      qty, sl: Math.round((price + stopDist) * 100) / 100,
       openedAt: new Date().toISOString(),
     });
   }
