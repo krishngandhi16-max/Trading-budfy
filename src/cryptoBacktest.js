@@ -27,8 +27,10 @@ async function fetchAllBars(symbol) {
   const start = new Date(end.getTime() - 4 * 365 * 24 * 60 * 60 * 1000);
   const allBars = [];
   let nextToken = null;
+  let page = 0;
 
   while (true) {
+    if (page > 0) await sleep(2000); // 2s between pages
     let url = `https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=${sym}` +
               `&timeframe=1H&start=${start.toISOString()}&end=${end.toISOString()}` +
               `&limit=1000&sort=asc`;
@@ -43,6 +45,7 @@ async function fetchAllBars(symbol) {
     const bars = data.bars?.[symbol] ?? [];
     allBars.push(...bars);
     nextToken = data.next_page_token;
+    page++;
     if (!nextToken || bars.length === 0) break;
   }
   return allBars;
@@ -179,7 +182,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 (async () => {
   console.log('Fetching Alpaca bars and running UT Bot + EMA100 backtest...\n');
   for (let i = 0; i < SYMBOLS.length; i++) {
-    if (i > 0) { process.stdout.write('  Waiting 10s to avoid rate limit...'); await sleep(10_000); console.log(' done'); }
+    if (i > 0) { process.stdout.write('  Waiting 60s to avoid rate limit...'); await sleep(60_000); console.log(' done'); }
     const sym = SYMBOLS[i];
     process.stdout.write(`  Fetching ${sym}...`);
     try {
