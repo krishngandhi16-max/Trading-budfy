@@ -18,7 +18,7 @@ const logger = {
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const BROKER_BASE = "https://paper-api.alpaca.markets/v2";
-const DATA_BASE   = "https://data.alpaca.markets/v1beta3/crypto/us";
+const DATA_BASE   = "https://data.alpaca.markets/v1beta3";
 
 const ALPACA_KEY    = process.env.ALPACA_API_KEY    ?? "";
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY ?? "";
@@ -100,9 +100,18 @@ interface Bar {
 
 async function getBars(alpacaSym: string, limit = 200): Promise<Bar[]> {
   const sym = encodeURIComponent(alpacaSym);
-  const url = `${DATA_BASE}/bars?symbols=${sym}&timeframe=1H&limit=${limit}&sort=asc`;
-  const data = await apiFetch(url) as { bars: Record<string, Bar[]> };
-  return data.bars?.[alpacaSym] ?? [];
+  const url = `${DATA_BASE}/crypto/us/bars?symbols=${sym}&timeframe=1H&limit=${limit}&sort=asc`;
+  try {
+    const data = await apiFetch(url) as { bars?: Record<string, Bar[]> };
+    const bars = data.bars?.[alpacaSym] ?? [];
+    if (bars.length === 0) {
+      logger.warn({ symbol: alpacaSym, url }, "API returned 0 bars — check ALPACA_SECRET_KEY and symbol format");
+    }
+    return bars;
+  } catch (err) {
+    logger.error({ symbol: alpacaSym, err: err instanceof Error ? err.message : String(err) }, "Bar fetch failed");
+    return [];
+  }
 }
 
 async function getEquity(): Promise<number> {
@@ -287,8 +296,9 @@ async function scanSymbol(
   openSymbols: string[],
 ): Promise<void> {
   const bars = await getBars(sym.alpaca, 200);
-  if (bars.length < EMA_PERIOD + 10) {
-    logger.warn({ symbol: sym.alpaca }, "Not enough bars");
+  const MIN_BARS = Math.min(EMA_PERIOD + 10, 50);
+  if (bars.length < MIN_BARS) {
+    logger.warn({ symbol: sym.alpaca, got: bars.length, need: MIN_BARS }, "Not enough bars");
     return;
   }
 
