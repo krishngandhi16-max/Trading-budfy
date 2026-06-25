@@ -6,7 +6,7 @@
  *
  * Env vars:
  *   ALPACA_API_KEY      Alpaca key ID
- *   ALPACA_SECRET_KEY   Alpaca secret key  (note: different name from JS stack)
+ *   ALPACA_SECRET_KEY   Alpaca secret key
  */
 
 const logger = {
@@ -15,10 +15,7 @@ const logger = {
   error: (obj: unknown, msg?: string) => console.error(`[CryptoBot] ${msg ?? ""}`, obj),
 };
 
-// ── Config ────────────────────────────────────────────────────────────────────
-
 const BROKER_BASE = "https://paper-api.alpaca.markets/v2";
-const DATA_BASE   = "https://data.alpaca.markets/v1beta3";
 
 const ALPACA_KEY    = process.env.ALPACA_API_KEY    ?? "";
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY ?? "";
@@ -28,10 +25,10 @@ const ATR_PERIOD = 10;
 const EMA_PERIOD = 100;
 const RISK_PCT   = 0.01;
 
-const SYMBOLS: { base: string; alpaca: string }[] = [
-  { base: "BTC", alpaca: "BTC/USD" },
-  { base: "ETH", alpaca: "ETH/USD" },
-  { base: "SOL", alpaca: "SOL/USD" },
+const SYMBOLS: { alpaca: string }[] = [
+  { alpaca: "BTC/USD" },
+  { alpaca: "ETH/USD" },
+  { alpaca: "SOL/USD" },
 ];
 
 const SCAN_INTERVAL_MS = 5 * 60_000;
@@ -83,15 +80,17 @@ async function apiFetch(url: string, opts: RequestInit = {}): Promise<unknown> {
 
 interface Bar { t: string; o: number; h: number; l: number; c: number; v: number; }
 
-async function getBars(alpacaSym: string, limit = 200): Promise<Bar[]> {
-  const sym = encodeURIComponent(alpacaSym);
-  const url = `${DATA_BASE}/crypto/us/bars?symbols=${sym}&timeframe=1H&limit=${limit}&sort=asc`;
+async function getBars(alpacaSym: string): Promise<Bar[]> {
+  const sym   = encodeURIComponent(alpacaSym);
+  const end   = new Date();
+  const start = new Date(end.getTime() - 200 * 60 * 60 * 1000);
+  const url   = `https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=${sym}&timeframe=1H` +
+                `&start=${start.toISOString()}&end=${end.toISOString()}&limit=200&sort=asc`;
   try {
     const data = await apiFetch(url) as { bars?: Record<string, Bar[]> };
     const bars = data.bars?.[alpacaSym] ?? [];
-    if (bars.length === 0) {
-      logger.warn({ symbol: alpacaSym, url }, "API returned 0 bars — check ALPACA_SECRET_KEY and symbol format");
-    }
+    logger.info({ symbol: alpacaSym, count: bars.length }, "Bars fetched");
+    if (bars.length === 0) logger.warn({ symbol: alpacaSym }, "0 bars — check API key or symbol format");
     return bars;
   } catch (err) {
     logger.error({ symbol: alpacaSym, err: err instanceof Error ? err.message : String(err) }, "Bar fetch failed");
@@ -136,8 +135,8 @@ function calcUTBot(bars: Bar[], atr: number[]): UTBotResult[] {
   const results: UTBotResult[] = [];
   let dir: 1 | -1 = 1;
   for (let i = 0; i < bars.length; i++) {
-    const src    = bars[i].c;
-    const nLoss  = KEY_VALUE * (atr[i] > 0 ? atr[i] : bars[i].h - bars[i].l);
+    const src   = bars[i].c;
+    const nLoss = KEY_VALUE * (atr[i] > 0 ? atr[i] : bars[i].h - bars[i].l);
     let newTrail: number;
     if (i === 0) {
       newTrail = src - nLoss;
@@ -187,15 +186,15 @@ async function closePosition(alpacaSym: string): Promise<void> {
   await apiFetch(`${BROKER_BASE}/positions/${encodeURIComponent(alpacaSym)}`, { method: "DELETE" });
 }
 
-async function scanSymbol(sym: { base: string; alpaca: string }, equity: number, openSymbols: string[]): Promise<void> {
-  const bars = await getBars(sym.alpaca, 200);
-  if (bars.length < 50) { logger.warn({ symbol: sym.alpaca, got: bars.length, need: 50 }, "Not enough bars"); return; }
+async function scanSymbol(sym: { alpaca: string }, equity: number, openSymbols: string[]): Promise<void> {
+  const bars = await getBars(sym.alpaca);
+  if (bars.length < 50) { logger.warn({ symbol: sym.alpaca, got: bars.length }, "Not enough bars"); return; }
 
-  const atr   = calcATR(bars);
-  const ema   = calcEMA(bars);
-  const utbot = calcUTBot(bars, atr);
-  const i     = bars.length - 2;
-  const price = bars[i].c;
+  const atr      = calcATR(bars);
+  const ema      = calcEMA(bars);
+  const utbot    = calcUTBot(bars, atr);
+  const i        = bars.length - 2;
+  const price    = bars[i].c;
   const aboveEma = price > ema[i];
   const prevDir  = utbot[i-1]?.direction ?? utbot[i].direction;
   const currDir  = utbot[i].direction;
@@ -203,7 +202,7 @@ async function scanSymbol(sym: { base: string; alpaca: string }, equity: number,
   const bearFlip = prevDir ===  1 && currDir === -1;
   const stopDist = KEY_VALUE * atr[i];
   const qty      = calcQty(equity, price, stopDist, sym.alpaca);
-  const isOpen   = openSymbols.some((s) => s.replace(/[\/_]/g, "").toUpperCase() === sym.alpaca.replace(/[\/_]/g, "").toUpperCase());
+  const isOpen   = openSymbols.some((s) => s.replace(/[\/]/g, "").toUpperCase() === sym.alpaca.replace(/[\/]/g, "").toUpperCase());
 
   logger.info({ symbol: sym.alpaca, price, aboveEma, utDir: currDir, bullFlip, bearFlip, isOpen, qty, stopDist: stopDist.toFixed(4) }, "Scan result");
 
@@ -230,7 +229,7 @@ async function runScan(): Promise<void> {
   try {
     const [equity, openSymbols] = await Promise.all([getEquity(), getOpenSymbols()]);
     state.openPositions = state.openPositions.filter((p) =>
-      openSymbols.some((s) => s.replace(/[\/_]/g, "").toUpperCase() === p.symbol.replace(/[\/_]/g, "").toUpperCase())
+      openSymbols.some((s) => s.replace(/[\/]/g, "").toUpperCase() === p.symbol.replace(/[\/]/g, "").toUpperCase())
     );
     logger.info({ scanCount: state.scanCount, equity, openCount: openSymbols.length }, "Crypto scan");
     for (const sym of SYMBOLS) await scanSymbol(sym, equity, openSymbols);
