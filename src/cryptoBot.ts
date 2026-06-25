@@ -18,7 +18,6 @@ const logger = {
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const BROKER_BASE = "https://paper-api.alpaca.markets/v2";
-const DATA_BASE   = "https://data.alpaca.markets/v1beta3";
 
 const ALPACA_KEY    = process.env.ALPACA_API_KEY    ?? "";
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY ?? "";
@@ -30,10 +29,11 @@ const EMA_PERIOD = 100;
 
 const RISK_PCT = 0.01;   // 1% equity at risk per trade
 
-const SYMBOLS: { base: string; alpaca: string }[] = [
-  { base: "BTC", alpaca: "BTC/USD" },
-  { base: "ETH", alpaca: "ETH/USD" },
-  { base: "SOL", alpaca: "SOL/USD" },
+// Yahoo ticker → Alpaca order symbol
+const SYMBOLS: { alpaca: string }[] = [
+  { alpaca: "BTC/USD" },
+  { alpaca: "ETH/USD" },
+  { alpaca: "SOL/USD" },
 ];
 
 const SCAN_INTERVAL_MS = 5 * 60_000; // 5-minute scan
@@ -98,14 +98,19 @@ interface Bar {
   v: number;
 }
 
-async function getBars(alpacaSym: string, limit = 200): Promise<Bar[]> {
-  const sym = encodeURIComponent(alpacaSym);
-  const url = `${DATA_BASE}/crypto/us/bars?symbols=${sym}&timeframe=1H&limit=${limit}&sort=asc`;
+async function getBars(alpacaSym: string): Promise<Bar[]> {
+  // Fetch 200 1H bars going back from now using start/end params (works on free paper accounts)
+  const sym   = encodeURIComponent(alpacaSym);
+  const end   = new Date();
+  const start = new Date(end.getTime() - 200 * 60 * 60 * 1000); // 200 hours back
+  const url   = `https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=${sym}&timeframe=1H` +
+                `&start=${start.toISOString()}&end=${end.toISOString()}&limit=200&sort=asc`;
   try {
     const data = await apiFetch(url) as { bars?: Record<string, Bar[]> };
     const bars = data.bars?.[alpacaSym] ?? [];
+    logger.info({ symbol: alpacaSym, count: bars.length }, "Bars fetched");
     if (bars.length === 0) {
-      logger.warn({ symbol: alpacaSym, url }, "API returned 0 bars — check ALPACA_SECRET_KEY and symbol format");
+      logger.warn({ symbol: alpacaSym }, "0 bars returned — check API subscription or symbol format");
     }
     return bars;
   } catch (err) {
@@ -291,11 +296,11 @@ async function closePosition(alpacaSym: string): Promise<void> {
 // ── Per-symbol scan ───────────────────────────────────────────────────────────
 
 async function scanSymbol(
-  sym: { base: string; alpaca: string },
+  sym: { alpaca: string },
   equity: number,
   openSymbols: string[],
 ): Promise<void> {
-  const bars = await getBars(sym.alpaca, 200);
+  const bars = await getBars(sym.alpaca);
   const MIN_BARS = Math.min(EMA_PERIOD + 10, 50);
   if (bars.length < MIN_BARS) {
     logger.warn({ symbol: sym.alpaca, got: bars.length, need: MIN_BARS }, "Not enough bars");
