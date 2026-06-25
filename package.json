@@ -1,22 +1,24 @@
 {
   "name": "trading-budfy",
   "version": "1.0.0",
-  "description": "Crypto + Stock trading bot with backtest",
-  "main": "dist/index.js",
+  "description": "",
+  "main": "src/server.js",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts"
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:37569/git/krishngandhi16-max/Trading-budfy"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "axios": "^1.6.0",
-    "express": "^4.18.2",
-    "winston": "^3.11.0"
-  },
-  "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/node": "^20.10.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.3.2"
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pg": "^8.20.0",
+    "yahoo-finance2": "^3.14.0"
   }
 }
