@@ -1,5 +1,9 @@
 run = "npm start"
 entrypoint = "src/server.js"
+modules = ["nodejs-20"]
+
+[nix]
+channel = "stable-24_05"
 
 [deployment]
 run = ["sh", "-c", "npm start"]
