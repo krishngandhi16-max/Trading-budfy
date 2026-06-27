@@ -19,7 +19,7 @@ const EMA_PERIOD   = 100;
 const MA200        = 200;
 const RISK_PCT     = 0.01;
 const MAX_NOTIONAL = 195_000;
-const SYMBOLS      = ['BTC/USD', 'ETH/USD', 'SOL/USD'];
+const SYMBOLS      = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'AVAX/USD', 'DOGE/USD', 'LINK/USD', 'LTC/USD'];
 
 async function fetchAllBars(symbol) {
   const sym   = encodeURIComponent(symbol);
