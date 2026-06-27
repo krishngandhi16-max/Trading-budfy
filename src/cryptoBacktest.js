@@ -20,6 +20,7 @@ const MA200        = 200;
 const RISK_PCT     = 0.01;
 const MAX_NOTIONAL = 195_000;
 const SYMBOLS      = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'AVAX/USD', 'DOGE/USD', 'LINK/USD', 'LTC/USD'];
+const WITH_SHORTS  = true; // simulate both long and short trades
 
 async function fetchAllBars(symbol) {
   const sym   = encodeURIComponent(symbol);
@@ -105,6 +106,12 @@ function classify(price, sma, prevSma) {
   return 'sideways';
 }
 
+function recordClose(pnl, s, equity) {
+  s.trades++; s.pnl += pnl;
+  if (pnl > 0) { s.wins++; s.grossWin += pnl; } else { s.grossLoss += Math.abs(pnl); }
+  return equity + pnl;
+}
+
 function backtest(bars) {
   const atr   = calcATR(bars);
   const ema   = calcEMA(bars, EMA_PERIOD);
@@ -114,7 +121,7 @@ function backtest(bars) {
   const mkStat = () => ({ trades: 0, wins: 0, pnl: 0, grossWin: 0, grossLoss: 0 });
   const stats  = { bull: mkStat(), bear: mkStat(), sideways: mkStat() };
   let equity   = 100_000;
-  let pos      = null;
+  let pos      = null; // { entry, qty, sl, cond, side: 'long'|'short' }
 
   for (let i = MA200 + 1; i < bars.length - 1; i++) {
     const price    = bars[i].c;
@@ -125,30 +132,43 @@ function backtest(bars) {
     const cond     = classify(price, sma[i], sma[i-1]);
 
     if (pos) {
-      const exit = bearFlip || !aboveEma || price <= pos.sl;
-      if (exit) {
-        const exitPrice = price <= pos.sl ? pos.sl : price;
-        const pnl = (exitPrice - pos.entry) * pos.qty;
-        const s   = stats[pos.cond];
-        s.trades++; s.pnl += pnl;
-        if (pnl > 0) { s.wins++; s.grossWin += pnl; } else { s.grossLoss += Math.abs(pnl); }
-        equity += pnl;
-        pos = null;
+      let exit = false, exitPrice = price;
+      if (pos.side === 'long') {
+        const slHit = price <= pos.sl;
+        exit = bearFlip || !aboveEma || slHit;
+        exitPrice = slHit ? pos.sl : price;
+        if (exit) {
+          const pnl = (exitPrice - pos.entry) * pos.qty;
+          equity = recordClose(pnl, stats[pos.cond], equity);
+          pos = null;
+        }
+      } else {
+        const slHit = price >= pos.sl;
+        exit = bullFlip || aboveEma || slHit;
+        exitPrice = slHit ? pos.sl : price;
+        if (exit) {
+          const pnl = (pos.entry - exitPrice) * pos.qty;
+          equity = recordClose(pnl, stats[pos.cond], equity);
+          pos = null;
+        }
       }
     }
 
-    if (!pos && bullFlip && aboveEma && stopDist > 0) {
+    if (!pos && stopDist > 0) {
       const qty = Math.min((equity * RISK_PCT) / stopDist, (equity * 0.25) / price, MAX_NOTIONAL / price);
-      pos = { entry: price, qty, sl: price - stopDist, cond };
+      if (bullFlip && aboveEma) {
+        pos = { entry: price, qty, sl: price - stopDist, cond, side: 'long' };
+      } else if (WITH_SHORTS && bearFlip && !aboveEma) {
+        pos = { entry: price, qty, sl: price + stopDist, cond, side: 'short' };
+      }
     }
   }
 
   // close open position at end
   if (pos) {
-    const pnl = (bars[bars.length-1].c - pos.entry) * pos.qty;
-    const s   = stats[pos.cond];
-    s.trades++; s.pnl += pnl;
-    if (pnl > 0) { s.wins++; s.grossWin += pnl; } else { s.grossLoss += Math.abs(pnl); }
+    const last = bars[bars.length-1].c;
+    const pnl  = pos.side === 'long' ? (last - pos.entry) * pos.qty : (pos.entry - last) * pos.qty;
+    recordClose(pnl, stats[pos.cond], equity);
   }
 
   return stats;
@@ -174,7 +194,7 @@ function print(symbol, stats, bars) {
     console.log(`  ${c.padEnd(11)}│  ${String(s.trades).padStart(4)}  │  ${wr(s).padStart(4)}  │${fmt(s.pnl)} │ ${pfv(s)}`);
   console.log(`─────────────┼────────┼────────┼────────────┼──────`);
   console.log(`  TOTAL      │  ${String(all.trades).padStart(4)}  │  ${wr(all).padStart(4)}  │${fmt(all.pnl)} │ ${pfv(all)}`);
-  console.log(`  Starting equity: $100,000 | Risk: 1%/trade | Long-only`);
+  console.log(`  Starting equity: $100,000 | Risk: 1%/trade | Long + Short`);
 }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
