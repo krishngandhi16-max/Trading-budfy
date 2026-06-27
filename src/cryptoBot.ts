@@ -34,6 +34,8 @@ const SYMBOLS: { alpaca: string }[] = [
   { alpaca: "BTC/USD" },
   { alpaca: "ETH/USD" },
   { alpaca: "SOL/USD" },
+  { alpaca: "AVAX/USD" },
+  { alpaca: "DOGE/USD" },
 ];
 
 const SCAN_INTERVAL_MS = 5 * 60_000; // 5-minute scan
