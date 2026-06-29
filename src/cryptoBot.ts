@@ -232,6 +232,16 @@ function calcQty(equity: number, price: number, stopDist: number, symbol: string
 // ── Order placement — market entry + stop only, NO take profit ────────────────
 
 async function placeLong(alpacaSym: string, qty: number, price: number, stopDist: number): Promise<void> {
+  // Guard against duplicate orders from rapid restarts
+  const livePositions = await apiFetch(`${BROKER_BASE}/positions`) as { symbol: string }[];
+  const alreadyOpen = livePositions.some((p) =>
+    p.symbol.replace(/[/_]/g, "").toUpperCase() === alpacaSym.replace(/[/_]/g, "").toUpperCase()
+  );
+  if (alreadyOpen) {
+    logger.warn({ symbol: alpacaSym }, "Position already exists on Alpaca — skipping order");
+    return;
+  }
+
   const sl = Math.round((price - stopDist) * 100) / 100;
   logger.info({ symbol: alpacaSym, side: "LONG", qty, price, sl, tp: "flip-only" }, "Crypto order");
 
