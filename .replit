@@ -7,5 +7,5 @@ channel = "stable-24_05"
 
 [deployment]
 run = ["node", "src/server.js"]
-build = ["sh", "-c", "npm run build || npx tsc"]
+build = ["sh", "-c", "npx tsc --skipLibCheck"]
 deploymentTarget = "cloudrun"
