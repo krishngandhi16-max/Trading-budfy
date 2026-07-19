@@ -179,14 +179,16 @@ function runPortfolio(symbolData, isStocks) {
       if (pos) {
         if (pos.side === 'long') {
           if (lo <= pos.sl || bearFlip || !aboveEma) {
-            record(symbol, 'long', pos.entry, lo <= pos.sl ? pos.sl : price, pos.qty,
-              (lo <= pos.sl ? pos.sl : price - pos.entry) * pos.qty);
+            const exit = lo <= pos.sl ? pos.sl : price;
+            const pnl  = (exit - pos.entry) * pos.qty;
+            record(symbol, 'long', pos.entry, exit, pos.qty, pnl);
             delete positions[symbol];
           }
         } else {
           if (hi >= pos.sl || bullFlip || aboveEma) {
-            record(symbol, 'short', pos.entry, hi >= pos.sl ? pos.sl : price, pos.qty,
-              (pos.entry - (hi >= pos.sl ? pos.sl : price)) * pos.qty);
+            const exit = hi >= pos.sl ? pos.sl : price;
+            const pnl  = (pos.entry - exit) * pos.qty;
+            record(symbol, 'short', pos.entry, exit, pos.qty, pnl);
             delete positions[symbol];
           }
         }
