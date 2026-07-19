@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trading Budfy — Live Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b0e14; --panel: #151a23; --panel2: #1c2430; --border: #263140;
+      --text: #e6edf3; --muted: #7d8794; --green: #2ecc71; --red: #ff5c5c;
+      --accent: #4c9aff; --amber: #ffb84d;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 16px; max-width: 1100px; margin: 0 auto; -webkit-font-smoothing: antialiased;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+    h1 span { color: var(--accent); }
+    .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; font-weight: 600; }
+    .pill.live { background: rgba(46,204,113,0.15); color: var(--green); }
+    .pill.down { background: rgba(255,92,92,0.15); color: var(--red); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+    .card .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .card .value { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+    .value.green { color: var(--green); } .value.red { color: var(--red); }
+    section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    section h2 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { text-align: right; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px; border-bottom: 1px solid var(--border); }
+    th:first-child, td:first-child { text-align: left; }
+    td { text-align: right; padding: 10px 8px; border-bottom: 1px solid var(--panel2); }
+    tr:last-child td { border-bottom: none; }
+    .sym { font-weight: 600; }
+    .side { font-size: 11px; padding: 2px 7px; border-radius: 5px; font-weight: 600; }
+    .side.long { background: rgba(46,204,113,0.15); color: var(--green); }
+    .side.short { background: rgba(255,92,92,0.15); color: var(--red); }
+    .bots { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 640px) { .bots { grid-template-columns: 1fr; } .card .value { font-size: 20px; } }
+    .bot { background: var(--panel2); border-radius: 10px; padding: 14px; }
+    .bot .name { font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot.off { background: var(--muted); }
+    .bot .row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; color: var(--muted); }
+    .bot .row b { color: var(--text); font-weight: 600; }
+    .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 20px; }
+    footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 20px; }
+    .err { color: var(--amber); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Trading <span>Budfy</span></h1>
+    <span id="status" class="pill down">connecting…</span>
+  </header>
+
+  <div class="grid" id="stats"></div>
+
+  <section>
+    <h2>Open Positions</h2>
+    <div id="positions"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Bots</h2>
+    <div class="bots" id="bots"></div>
+  </section>
+
+  <footer id="footer">Auto-refreshing every 15s</footer>
+
+  <script>
+    const money = (n) => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    const pct = (n) => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+    const cls = (n) => n >= 0 ? 'green' : 'red';
+
+    async function load() {
+      try {
+        const [acctRes, statusRes] = await Promise.all([
+          fetch('/api/account').then(r => r.json()),
+          fetch('/api/status').then(r => r.json()),
+        ]);
+
+        document.getElementById('status').className = 'pill live';
+        document.getElementById('status').textContent = 'LIVE';
+
+        if (acctRes.error) {
+          document.getElementById('stats').innerHTML =
+            '<div class="card"><div class="label">Account</div><div class="err">' + acctRes.error + '</div></div>';
+        } else {
+          const dayPl = acctRes.equity - acctRes.lastEquity;
+          const totalPl = acctRes.positions.reduce((s, p) => s + p.unrealizedPl, 0);
+          document.getElementById('stats').innerHTML = `
+            <div class="card"><div class="label">Equity</div><div class="value">${money(acctRes.equity)}</div></div>
+            <div class="card"><div class="label">Today P&L</div><div class="value ${cls(dayPl)}">${money(dayPl)}</div></div>
+            <div class="card"><div class="label">Open P&L</div><div class="value ${cls(totalPl)}">${money(totalPl)}</div></div>
+            <div class="card"><div class="label">Cash</div><div class="value">${money(acctRes.cash)}</div></div>
+            <div class="card"><div class="label">Positions</div><div class="value">${acctRes.positions.length}</div></div>`;
+
+          const pos = acctRes.positions;
+          document.getElementById('positions').innerHTML = pos.length === 0
+            ? '<div class="empty">No open positions</div>'
+            : `<table><thead><tr>
+                 <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Current</th><th>P&L</th><th>%</th>
+               </tr></thead><tbody>` +
+               pos.map(p => `<tr>
+                 <td class="sym">${p.symbol}</td>
+                 <td><span class="side ${p.side}">${p.side.toUpperCase()}</span></td>
+                 <td>${p.qty.toLocaleString(undefined,{maximumFractionDigits:4})}</td>
+                 <td>$${p.avgEntry.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+                 <td>$${p.currentPrice.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+                 <td class="${cls(p.unrealizedPl)}">${money(p.unrealizedPl)}</td>
+                 <td class="${cls(p.unrealizedPct)}">${pct(p.unrealizedPct)}</td>
+               </tr>`).join('') + '</tbody></table>';
+        }
+
+        const bot = (name, s) => {
+          const on = s && s.running;
+          return `<div class="bot">
+            <div class="name"><span class="dot ${on?'on':'off'}"></span>${name}</div>
+            <div class="row"><span>Status</span><b>${on ? 'Running' : 'Stopped'}</b></div>
+            <div class="row"><span>Scans</span><b>${s?.scanCount ?? 0}</b></div>
+            <div class="row"><span>Open</span><b>${s?.openPositions?.length ?? 0}</b></div>
+            ${'marketOpen' in (s||{}) ? `<div class="row"><span>Market</span><b>${s.marketOpen?'Open':'Closed'}</b></div>` : ''}
+            <div class="row"><span>Last scan</span><b>${s?.lastScan ? new Date(s.lastScan).toLocaleTimeString() : '—'}</b></div>
+          </div>`;
+        };
+        document.getElementById('bots').innerHTML =
+          bot('Crypto', statusRes.crypto) + bot('Stocks', statusRes.stocks);
+
+        document.getElementById('footer').textContent =
+          'Updated ' + new Date().toLocaleTimeString() + ' · auto-refresh 15s';
+      } catch (e) {
+        document.getElementById('status').className = 'pill down';
+        document.getElementById('status').textContent = 'OFFLINE';
+      }
+    }
+    load();
+    setInterval(load, 15000);
+  </script>
+</body>
+</html>

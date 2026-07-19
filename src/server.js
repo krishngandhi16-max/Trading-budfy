@@ -69,6 +69,49 @@ app.get('/api/stocks/state', (_req, res) => {
   res.json(getStockBotState());
 });
 
+// Live account + positions, fetched server-side so keys never reach the browser
+async function alpacaGet(path) {
+  const res = await fetch(`https://paper-api.alpaca.markets/v2${path}`, {
+    headers: {
+      'APCA-API-KEY-ID':     process.env.ALPACA_API_KEY     || '',
+      'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY  || '',
+    },
+  });
+  if (!res.ok) throw new Error(`Alpaca ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  return res.json();
+}
+
+app.get('/api/account', async (_req, res) => {
+  try {
+    const [acct, positions] = await Promise.all([
+      alpacaGet('/account'),
+      alpacaGet('/positions'),
+    ]);
+    res.json({
+      equity:        parseFloat(acct.equity),
+      lastEquity:    parseFloat(acct.last_equity),
+      cash:          parseFloat(acct.cash),
+      buyingPower:   parseFloat(acct.buying_power),
+      positions: positions.map((p) => ({
+        symbol:       p.symbol,
+        side:         p.side,
+        qty:          parseFloat(p.qty),
+        avgEntry:     parseFloat(p.avg_entry_price),
+        currentPrice: parseFloat(p.current_price),
+        marketValue:  parseFloat(p.market_value),
+        unrealizedPl: parseFloat(p.unrealized_pl),
+        unrealizedPct: parseFloat(p.unrealized_plpc) * 100,
+      })),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// Dashboard (also fixes "Cannot GET /")
+app.use(express.static(require('path').join(__dirname, '..', 'public')));
+
 // Run self-heal then start listening
 selfHeal().then((report) => {
   app.locals.healReport = report;
