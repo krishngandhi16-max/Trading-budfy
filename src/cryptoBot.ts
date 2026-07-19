@@ -20,7 +20,8 @@ const BROKER_BASE = "https://paper-api.alpaca.markets/v2";
 const ALPACA_KEY    = process.env.ALPACA_API_KEY    ?? "";
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY ?? "";
 
-const KEY_VALUE  = 1.5;
+// Daily-bar UT Bot, validated walk-forward (labV2/dailyLab): TEST +71.8%, 13.1% DD, PF 2.79
+const KEY_VALUE  = 3.0;
 const ATR_PERIOD = 10;
 const EMA_PERIOD = 100;
 const RISK_PCT   = 0.01;
@@ -83,11 +84,12 @@ async function apiFetch(url: string, opts: RequestInit = {}): Promise<unknown> {
 interface Bar { t: string; o: number; h: number; l: number; c: number; v: number; }
 
 async function getBars(alpacaSym: string): Promise<Bar[]> {
+  // Daily bars — hourly failed walk-forward validation, daily passed (see labV2.js)
   const sym   = encodeURIComponent(alpacaSym);
   const end   = new Date();
-  const start = new Date(end.getTime() - 200 * 60 * 60 * 1000);
-  const url   = `https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=${sym}&timeframe=1H` +
-                `&start=${start.toISOString()}&end=${end.toISOString()}&limit=200&sort=asc`;
+  const start = new Date(end.getTime() - 500 * 24 * 60 * 60 * 1000);
+  const url   = `https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=${sym}&timeframe=1D` +
+                `&start=${start.toISOString()}&end=${end.toISOString()}&limit=500&sort=asc`;
   try {
     const data = await apiFetch(url) as { bars?: Record<string, Bar[]> };
     const bars = data.bars?.[alpacaSym] ?? [];

@@ -1,20 +1,20 @@
 /**
- * Stock trading bot — trend-following momentum with volatility-scaled stops.
+ * Stock trading bot — Donchian channel breakout on DAILY bars (Turtle rules).
  *
- * Strategy (each component is a standard TradingView indicator, replicated exactly):
- *   - UT Bot Alerts (ATR trailing stop, KEY_VALUE=1.5, ATR=10) — entry/exit trigger
- *   - EMA100 regime filter — longs only above, shorts only below
- *   - RSI(14) extreme filter — don't chase: no longs when RSI>70, no shorts when RSI<30
- *   - ATR-based stop loss, 1% equity risk per trade (volatility position sizing)
+ * Strategy (validated walk-forward in labV2/dailyLab — TEST +195.8% over ~7y,
+ * 14.7% maxDD, PF 2.02 on 9 liquid names):
+ *   - Enter long on close above the prior 100-day high (EMA100 regime: price above)
+ *   - Enter short on close below the prior 100-day low (price below EMA100)
+ *   - Exit long on close below the prior 50-day low; exit short on 50-day high
+ *   - Stop loss at 2x ATR(20); 1% equity risk per trade
  *
- * Evidence base:
- *   - Time-series momentum: Moskowitz, Ooi & Pedersen (2012) — trend persists across assets
- *   - Volatility-scaled sizing: Barroso & Santa-Clara (2015) — halves momentum crashes
- *   - Long AND short (stocks are shortable on Alpaca paper, unlike crypto)
+ * Evidence base: classic Donchian/Turtle trend-following; time-series momentum
+ * (Moskowitz, Ooi & Pedersen 2012). Hourly variants FAILED out-of-sample —
+ * daily passed across every family tested. Do not move this back to intraday
+ * without re-running the walk-forward.
  *
  * Only trades during regular market hours (checked via Alpaca /clock).
- * Exits are flip-only (trend reversal), same as the crypto bot. Stop order on
- * Alpaca is the hard floor.
+ * Stop order on Alpaca is the hard floor.
  *
  * Env vars: ALPACA_API_KEY, ALPACA_SECRET_KEY  (same as crypto bot)
  */
@@ -31,15 +31,16 @@ const DATA_BASE   = "https://data.alpaca.markets/v2";
 const ALPACA_KEY    = process.env.ALPACA_API_KEY    ?? "";
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY ?? "";
 
-const KEY_VALUE  = 3.0; // widened from 1.5 — strategyLab grid: KV=3 +35.8%/12.3%DD vs KV=1.5 -8.8% (whipsaw)
-const ATR_PERIOD = 10;
+const ENTRY_N    = 100;  // breakout: close beyond prior 100-day extreme
+const EXIT_N     = 50;   // exit: close beyond prior 50-day opposite extreme
+const ATR_PERIOD = 20;
+const ATR_STOP   = 2;    // stop at 2x ATR(20)
 const EMA_PERIOD = 100;
-const RSI_PERIOD = 14;
 const RISK_PCT   = 0.01;
 const MAX_ORDER_NOTIONAL = 195_000;
 
-// Liquid, high-beta names where hourly trend-following has enough range to work.
-const SYMBOLS = ["NVDA", "AMD", "TSLA", "MSFT", "META", "AMZN", "AVGO"];
+// Liquid, high-beta names — matches the walk-forward test universe.
+const SYMBOLS = ["NVDA", "AMD", "TSLA", "MSFT", "META", "AMZN", "AVGO", "AAPL", "GOOGL"];
 
 const SCAN_INTERVAL_MS = 5 * 60_000;
 
@@ -93,10 +94,10 @@ async function apiFetch(url: string, opts: RequestInit = {}): Promise<unknown> {
 interface Bar { t: string; o: number; h: number; l: number; c: number; v: number; }
 
 async function getBars(symbol: string): Promise<Bar[]> {
-  // ~350 hours back covers 200+ regular-session 1H bars (6.5 bars/day, weekends off)
+  // Daily bars — hourly failed walk-forward validation, daily passed (see labV2.js)
   const end   = new Date();
-  const start = new Date(end.getTime() - 60 * 24 * 60 * 60 * 1000); // 60 days
-  const url   = `${DATA_BASE}/stocks/bars?symbols=${symbol}&timeframe=1Hour` +
+  const start = new Date(end.getTime() - 600 * 24 * 60 * 60 * 1000); // ~400 trading days
+  const url   = `${DATA_BASE}/stocks/bars?symbols=${symbol}&timeframe=1Day` +
                 `&start=${start.toISOString()}&end=${end.toISOString()}` +
                 `&limit=1000&adjustment=split&feed=iex&sort=asc`;
   try {
@@ -160,55 +161,6 @@ function calcEMA(bars: Bar[], period = EMA_PERIOD): number[] {
   return ema;
 }
 
-// Wilder's RSI — same as TradingView's ta.rsi()
-function calcRSI(bars: Bar[], period = RSI_PERIOD): number[] {
-  const rsi: number[] = new Array(bars.length).fill(50);
-  let avgGain = 0, avgLoss = 0;
-  for (let i = 1; i < bars.length; i++) {
-    const change = bars[i].c - bars[i-1].c;
-    const gain = Math.max(change, 0), loss = Math.max(-change, 0);
-    if (i <= period) {
-      avgGain += gain / period;
-      avgLoss += loss / period;
-    } else {
-      avgGain = (avgGain * (period - 1) + gain) / period;
-      avgLoss = (avgLoss * (period - 1) + loss) / period;
-    }
-    if (i >= period) rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  }
-  return rsi;
-}
-
-interface UTBotResult { direction: 1 | -1; trailStop: number; }
-
-function calcUTBot(bars: Bar[], atr: number[]): UTBotResult[] {
-  const results: UTBotResult[] = [];
-  let dir: 1 | -1 = 1;
-  for (let i = 0; i < bars.length; i++) {
-    const src   = bars[i].c;
-    const nLoss = KEY_VALUE * (atr[i] > 0 ? atr[i] : bars[i].h - bars[i].l);
-    let newTrail: number;
-    if (i === 0) {
-      newTrail = src - nLoss;
-    } else {
-      const pt = results[i-1].trailStop, ps = bars[i-1].c;
-      if      (src > pt && ps > pt) newTrail = Math.max(pt, src - nLoss);
-      else if (src < pt && ps < pt) newTrail = Math.min(pt, src + nLoss);
-      else if (src > pt)            newTrail = src - nLoss;
-      else                          newTrail = src + nLoss;
-    }
-    const prevDir: 1 | -1 = i === 0 ? dir : results[i-1].direction;
-    if (i > 0) {
-      const ps = bars[i-1].c, pt = results[i-1].trailStop;
-      if      (ps <= pt && src > newTrail) dir = 1;
-      else if (ps >= pt && src < newTrail) dir = -1;
-      else dir = prevDir;
-    }
-    results.push({ direction: dir, trailStop: newTrail });
-  }
-  return results;
-}
-
 // ── Sizing — whole shares (shorts cannot be fractional) ──────────────────────
 
 function calcQty(equity: number, price: number, stopDist: number): number {
@@ -265,51 +217,66 @@ async function closePosition(symbol: string): Promise<void> {
 
 // ── Per-symbol scan ──────────────────────────────────────────────────────────
 
+function rollHigh(bars: Bar[], upto: number, n: number): number {
+  let m = -Infinity;
+  for (let j = Math.max(0, upto - n + 1); j <= upto; j++) m = Math.max(m, bars[j].h);
+  return m;
+}
+
+function rollLow(bars: Bar[], upto: number, n: number): number {
+  let m = Infinity;
+  for (let j = Math.max(0, upto - n + 1); j <= upto; j++) m = Math.min(m, bars[j].l);
+  return m;
+}
+
 async function scanSymbol(symbol: string, equity: number, positions: LivePosition[]): Promise<void> {
   const bars = await getBars(symbol);
-  if (bars.length < EMA_PERIOD + 10) {
-    logger.warn({ symbol, got: bars.length, need: EMA_PERIOD + 10 }, "Not enough bars");
+  if (bars.length < ENTRY_N + EMA_PERIOD / 2) {
+    logger.warn({ symbol, got: bars.length, need: ENTRY_N + EMA_PERIOD / 2 }, "Not enough bars");
     return;
   }
 
   const atr      = calcATR(bars);
   const ema      = calcEMA(bars);
-  const rsi      = calcRSI(bars);
-  const utbot    = calcUTBot(bars, atr);
-  const i        = bars.length - 2;              // last fully closed bar
+  const i        = bars.length - 2;              // last fully closed daily bar
   const price    = bars[i].c;
   const aboveEma = price > ema[i];
-  const prevDir  = utbot[i-1]?.direction ?? utbot[i].direction;
-  const currDir  = utbot[i].direction;
-  const bullFlip = prevDir === -1 && currDir === 1;
-  const bearFlip = prevDir ===  1 && currDir === -1;
-  const stopDist = KEY_VALUE * atr[i];
-  const qty      = calcQty(equity, price, stopDist);
-  const live     = positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
+
+  // Donchian channels computed on bars strictly before bar i
+  const hi100 = rollHigh(bars, i - 1, ENTRY_N);
+  const lo100 = rollLow(bars, i - 1, ENTRY_N);
+  const hi50  = rollHigh(bars, i - 1, EXIT_N);
+  const lo50  = rollLow(bars, i - 1, EXIT_N);
+
+  const breakUp   = price > hi100;
+  const breakDown = price < lo100;
+  const stopDist  = ATR_STOP * atr[i];
+  const qty       = calcQty(equity, price, stopDist);
+  const live      = positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
 
   logger.info({
-    symbol, price, aboveEma, utDir: currDir, bullFlip, bearFlip,
-    rsi: rsi[i].toFixed(1), isOpen: !!live, side: live?.side, qty, stopDist: stopDist.toFixed(2),
+    symbol, price, aboveEma, hi100: hi100.toFixed(2), lo100: lo100.toFixed(2),
+    breakUp, breakDown, isOpen: !!live, side: live?.side, qty, stopDist: stopDist.toFixed(2),
   }, "Scan result");
 
   if (live) {
     // Side comes from Alpaca itself, so signal exits survive restarts.
-    // Exit on UT flip only — EMA cross exit cut winners early (strategyLab grid).
-    if (live.side === "long"  && bearFlip) { await closePosition(symbol); return; }
-    if (live.side === "short" && bullFlip) { await closePosition(symbol); return; }
+    // Turtle exit: close beyond the 50-day opposite extreme.
+    if (live.side === "long"  && price < lo50) { await closePosition(symbol); return; }
+    if (live.side === "short" && price > hi50) { await closePosition(symbol); return; }
     return;
   }
 
   if (qty <= 0) return;
 
-  // Long: fresh bull flip, above EMA100, not chasing an overbought spike
-  if (bullFlip && aboveEma && rsi[i] < 70) {
+  // Long: close breaks above prior 100-day high in an uptrend regime
+  if (breakUp && aboveEma) {
     await placeEntry(symbol, "long", qty, price, stopDist);
     state.openPositions.push({ symbol, side: "long", entryPrice: price, qty,
       sl: Math.round((price - stopDist) * 100) / 100, openedAt: new Date().toISOString() });
   }
-  // Short: fresh bear flip, below EMA100, not chasing an oversold flush
-  else if (bearFlip && !aboveEma && rsi[i] > 30) {
+  // Short: close breaks below prior 100-day low in a downtrend regime
+  else if (breakDown && !aboveEma) {
     await placeEntry(symbol, "short", qty, price, stopDist);
     state.openPositions.push({ symbol, side: "short", entryPrice: price, qty,
       sl: Math.round((price + stopDist) * 100) / 100, openedAt: new Date().toISOString() });
