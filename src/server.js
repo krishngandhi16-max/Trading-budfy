@@ -12,6 +12,15 @@ try {
   getCryptoBotState = () => ({ running: false, error: 'not compiled' });
 }
 
+let startStockBot, getStockBotState;
+try {
+  ({ startStockBot, getStockBotState } = require('../dist/stockBot'));
+} catch (e) {
+  console.warn('[server] stockBot not compiled yet — run npx tsc. Stock bot disabled.');
+  startStockBot    = () => {};
+  getStockBotState = () => ({ running: false, error: 'not compiled' });
+}
+
 const app  = express();
 const PORT = process.env.PORT || 5000;
 
@@ -47,6 +56,7 @@ app.get('/api/status', (_req, res) => {
     hasSecretKey:      !!process.env.ALPACA_SECRET_KEY,
     hasDb:             !!process.env.DATABASE_URL,
     crypto:            getCryptoBotState(),
+    stocks:            getStockBotState(),
     timestamp:         new Date().toISOString(),
   });
 });
@@ -55,18 +65,24 @@ app.get('/api/crypto/state', (_req, res) => {
   res.json(getCryptoBotState());
 });
 
+app.get('/api/stocks/state', (_req, res) => {
+  res.json(getStockBotState());
+});
+
 // Run self-heal then start listening
 selfHeal().then((report) => {
   app.locals.healReport = report;
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     startCryptoBot();
+    startStockBot();
   });
 }).catch((err) => {
   console.error('selfHeal threw unexpectedly:', err.message);
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT} (self-heal skipped)`);
     startCryptoBot();
+    startStockBot();
   });
 });
 

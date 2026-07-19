@@ -12,6 +12,6 @@
     "forceConsistentCasingInFileNames": true,
     "allowJs": true
   },
-  "include": ["src/cryptoBot.ts"],
+  "include": ["src/cryptoBot.ts", "src/stockBot.ts"],
   "exclude": ["node_modules", "dist"]
 }
