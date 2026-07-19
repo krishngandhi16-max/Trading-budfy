@@ -213,8 +213,9 @@ async function scanSymbol(sym: { alpaca: string }, equity: number, openSymbols: 
 
   if (isOpen) {
     const pos = state.openPositions.find((p) => p.symbol === sym.alpaca);
-    if (pos?.side === "long"  && (bearFlip || !aboveEma)) { await closePosition(sym.alpaca); return; }
-    if (pos?.side === "short" && (bullFlip || aboveEma))  { await closePosition(sym.alpaca); return; }
+    // Exit on UT flip only — EMA cross exit cut winners early (strategyLab: +1.1% → +19.2%)
+    if (pos?.side === "long"  && bearFlip) { await closePosition(sym.alpaca); return; }
+    if (pos?.side === "short" && bullFlip) { await closePosition(sym.alpaca); return; }
   }
 
   if (isOpen || qty <= 0) return;

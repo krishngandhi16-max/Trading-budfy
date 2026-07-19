@@ -31,7 +31,7 @@ const DATA_BASE   = "https://data.alpaca.markets/v2";
 const ALPACA_KEY    = process.env.ALPACA_API_KEY    ?? "";
 const ALPACA_SECRET = process.env.ALPACA_SECRET_KEY ?? "";
 
-const KEY_VALUE  = 1.5;
+const KEY_VALUE  = 3.0; // widened from 1.5 — strategyLab grid: KV=3 +35.8%/12.3%DD vs KV=1.5 -8.8% (whipsaw)
 const ATR_PERIOD = 10;
 const EMA_PERIOD = 100;
 const RSI_PERIOD = 14;
@@ -293,9 +293,10 @@ async function scanSymbol(symbol: string, equity: number, positions: LivePositio
   }, "Scan result");
 
   if (live) {
-    // Side comes from Alpaca itself, so signal exits survive restarts
-    if (live.side === "long"  && (bearFlip || !aboveEma)) { await closePosition(symbol); return; }
-    if (live.side === "short" && (bullFlip || aboveEma))  { await closePosition(symbol); return; }
+    // Side comes from Alpaca itself, so signal exits survive restarts.
+    // Exit on UT flip only — EMA cross exit cut winners early (strategyLab grid).
+    if (live.side === "long"  && bearFlip) { await closePosition(symbol); return; }
+    if (live.side === "short" && bullFlip) { await closePosition(symbol); return; }
     return;
   }
 
