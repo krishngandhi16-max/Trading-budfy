@@ -38,6 +38,8 @@ showPdhl    = input.bool(true, "Show PDH / PDL lines",   group="Display")
 showVp      = input.bool(true, "Show VAH / VAL / POC",   group="Display")
 showFvg     = input.bool(true, "Show FVG boxes",         group="Display")
 showPanel   = input.bool(true, "Show status panel",      group="Display")
+levelsMode  = input.string("Latest signal only", "SL/TP lines", options=["Latest signal only", "All signals", "Off (hover tooltip only)"], group="Display")
+lineBarsFwd = input.int(40, "SL/TP line length (bars)", minval=5, maxval=200, group="Display")
 
 isMaster = mode == "Master (all filters)"
 isSweep  = mode == "Liquidity Sweep only"
@@ -277,26 +279,65 @@ plot(showVp   ? poc : na, "POC", color=color.new(color.red,     0), linewidth=2)
 plot(showVp   ? vah : na, "VAH", color=color.new(color.blue,   30))
 plot(showVp   ? val : na, "VAL", color=color.new(color.orange, 30))
 
-// Signal labels + entry / stop-loss / take-profit lines
-drawTradeLevels(float stopPx, float t1Px, float targetPx) =>
-    line.new(bar_index, close,    bar_index + 25, close,    color=color.new(color.gray, 30),  style=line.style_dotted, width=1)
-    line.new(bar_index, stopPx,   bar_index + 25, stopPx,   color=color.new(color.red, 0),    style=line.style_dashed, width=2)
-    line.new(bar_index, targetPx, bar_index + 25, targetPx, color=color.new(color.teal, 0),   style=line.style_dashed, width=2)
-    label.new(bar_index + 25, stopPx,   "SL " + str.tostring(stopPx, format.mintick),   style=label.style_label_left, color=color.new(color.red, 20),  textcolor=color.white, size=size.small)
-    label.new(bar_index + 25, targetPx, "TP " + str.tostring(targetPx, format.mintick), style=label.style_label_left, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
-    if not na(t1Px)
-        line.new(bar_index, t1Px, bar_index + 25, t1Px, color=color.new(color.teal, 40), style=line.style_dotted, width=1)
-        label.new(bar_index + 25, t1Px, "TP1 (POC) " + str.tostring(t1Px, format.mintick), style=label.style_label_left, color=color.new(color.teal, 55), textcolor=color.white, size=size.tiny)
+// Signal tags: compact "BUY"/"SELL" text sitting right on the candle.
+// Pine Script has no click-event API for drawn objects, so the full trade
+// plan (entry / SL / TP1 / TP / R:R) is attached as a hover TOOLTIP — mouse
+// over the tag to read it. SL/TP lines are drawn on the chart too; by default
+// only the most recent long/short signal keeps its lines (old ones are
+// deleted) so the chart doesn't fill up with stale levels — set "SL/TP lines"
+// to "All signals" to keep every one, or "Off" to rely on the tooltip only.
+tradeTooltip(string side, float entry, float stop, float t1, float target) =>
+    riskAbs = math.abs(entry - stop)
+    rr = riskAbs > 0 ? math.abs(target - entry) / riskAbs : na
+    side + "  entry " + str.tostring(entry, format.mintick) +
+     "\nSL   " + str.tostring(stop, format.mintick) +
+     (na(t1) ? "" : "\nTP1  " + str.tostring(t1, format.mintick) + "  (POC, take half)") +
+     "\nTP   " + str.tostring(target, format.mintick) +
+     "\nR:R  " + str.tostring(rr, "#.##")
 
-tradeText(string side) =>
-    side + " @ " + str.tostring(close, format.mintick) + "\nSL " + str.tostring(sigStop, format.mintick) + (na(sigT1) ? "" : "\nTP1 " + str.tostring(sigT1, format.mintick)) + "\nTP " + str.tostring(sigTarget, format.mintick)
+var line  slLineL  = na
+var line  tpLineL  = na
+var line  t1LineL  = na
+var label slLabelL = na
+var label tpLabelL = na
+
+var line  slLineS  = na
+var line  tpLineS  = na
+var line  t1LineS  = na
+var label slLabelS = na
+var label tpLabelS = na
 
 if buySignal
-    label.new(bar_index, low,  tradeText("BUY"),  style=label.style_label_up,   color=color.new(color.green, 10), textcolor=color.white, size=size.small)
-    drawTradeLevels(sigStop, sigT1, sigTarget)
+    label.new(bar_index, low, "BUY", style=label.style_label_up, color=color.new(color.green, 10), textcolor=color.white, size=size.small, tooltip=tradeTooltip("BUY", close, sigStop, sigT1, sigTarget))
+    if levelsMode != "Off (hover tooltip only)"
+        if levelsMode == "Latest signal only"
+            line.delete(slLineL)
+            line.delete(tpLineL)
+            line.delete(t1LineL)
+            label.delete(slLabelL)
+            label.delete(tpLabelL)
+        slLineL  := line.new(bar_index, sigStop,   bar_index + lineBarsFwd, sigStop,   color=color.new(color.red, 0),   style=line.style_dashed, width=2)
+        tpLineL  := line.new(bar_index, sigTarget, bar_index + lineBarsFwd, sigTarget, color=color.new(color.teal, 0),  style=line.style_dashed, width=2)
+        slLabelL := label.new(bar_index + lineBarsFwd, sigStop,   "SL " + str.tostring(sigStop, format.mintick),   style=label.style_label_left, color=color.new(color.red, 20),  textcolor=color.white, size=size.tiny)
+        tpLabelL := label.new(bar_index + lineBarsFwd, sigTarget, "TP " + str.tostring(sigTarget, format.mintick), style=label.style_label_left, color=color.new(color.teal, 20), textcolor=color.white, size=size.tiny)
+        if not na(sigT1)
+            t1LineL := line.new(bar_index, sigT1, bar_index + lineBarsFwd, sigT1, color=color.new(color.teal, 45), style=line.style_dotted, width=1)
+
 if sellSignal
-    label.new(bar_index, high, tradeText("SELL"), style=label.style_label_down, color=color.new(color.red, 10),  textcolor=color.white, size=size.small)
-    drawTradeLevels(sigStop, sigT1, sigTarget)
+    label.new(bar_index, high, "SELL", style=label.style_label_down, color=color.new(color.red, 10), textcolor=color.white, size=size.small, tooltip=tradeTooltip("SELL", close, sigStop, sigT1, sigTarget))
+    if levelsMode != "Off (hover tooltip only)"
+        if levelsMode == "Latest signal only"
+            line.delete(slLineS)
+            line.delete(tpLineS)
+            line.delete(t1LineS)
+            label.delete(slLabelS)
+            label.delete(tpLabelS)
+        slLineS  := line.new(bar_index, sigStop,   bar_index + lineBarsFwd, sigStop,   color=color.new(color.red, 0),   style=line.style_dashed, width=2)
+        tpLineS  := line.new(bar_index, sigTarget, bar_index + lineBarsFwd, sigTarget, color=color.new(color.teal, 0),  style=line.style_dashed, width=2)
+        slLabelS := label.new(bar_index + lineBarsFwd, sigStop,   "SL " + str.tostring(sigStop, format.mintick),   style=label.style_label_left, color=color.new(color.red, 20),  textcolor=color.white, size=size.tiny)
+        tpLabelS := label.new(bar_index + lineBarsFwd, sigTarget, "TP " + str.tostring(sigTarget, format.mintick), style=label.style_label_left, color=color.new(color.teal, 20), textcolor=color.white, size=size.tiny)
+        if not na(sigT1)
+            t1LineS := line.new(bar_index, sigT1, bar_index + lineBarsFwd, sigT1, color=color.new(color.teal, 45), style=line.style_dotted, width=1)
 
 // ── Status panel ─────────────────────────────────────────────────────────────
 stateName(int s) =>

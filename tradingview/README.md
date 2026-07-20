@@ -37,9 +37,23 @@ Right-click the chart → **Add alert** → Condition: *Master B/S* → pick
 
 ## SL / TP on every signal
 
-Each signal label prints entry, SL, and TP; dashed lines are drawn on the
-chart. Stops sit at the sweep extreme (or 1.5×ATR in VP mode). In
-Master/VP modes TP1 = POC (take half), TP = VAH/VAL. In Sweep mode TP = PDH/PDL.
+Each signal prints a compact **BUY**/**SELL** tag directly on the candle.
+**Hover your mouse over the tag** to see the full trade plan (entry, SL,
+TP1, TP, R:R) as a tooltip — Pine Script has no click-event API for drawn
+objects, so hover is the closest thing to "click for details" it supports.
+
+Dashed SL/TP lines are also drawn on the chart. Stops sit at the sweep
+extreme (or 1.5×ATR in VP mode). In Master/VP modes TP1 = POC (take half),
+TP = VAH/VAL. In Sweep mode TP = PDH/PDL.
+
+The **"SL/TP lines"** input (Display group) controls how many sets of lines
+stay on the chart:
+- **Latest signal only** (default) — only the most recent long/short signal's
+  lines are shown; older ones are deleted automatically so the chart stays
+  readable.
+- **All signals** — every signal keeps its lines (gets busy on longer history).
+- **Off (hover tooltip only)** — no lines at all, just the BUY/SELL tags and
+  their hover tooltips.
 
 ## Implementation notes (why it differs slightly from the videos)
 
