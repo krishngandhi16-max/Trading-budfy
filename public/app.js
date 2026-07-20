@@ -28,6 +28,13 @@ $('#scanBtn').addEventListener('click', async () => {
   $('#scanBtn').textContent = 'Run one scan now';
   await refresh();
 });
+$('#flattenBtn').addEventListener('click', async () => {
+  if (!confirm('Close ALL open strategy-lab positions right now and lock in current P&L?\n\n(Your crypto bot is not affected. Closed trades will still be tracked to show what they would have done.)')) return;
+  $('#flattenBtn').textContent = 'Closing…';
+  try { await fetch('/api/flatten-now', { method: 'POST' }); } catch {}
+  $('#flattenBtn').textContent = '💰 Lock in profits';
+  await refresh();
+});
 
 // ── data ────────────────────────────────────────────────────────────────────────
 async function refresh() {
@@ -66,16 +73,35 @@ function render() {
   return renderStrategy(activeTab);
 }
 
+function pf(v) { return v == null ? '∞' : v; }
+
 function renderOverview() {
   const s = cache.strategies;
+  const o = s.overall || {};
+
+  const overallCard = `
+    <div class="card" style="grid-column:1/-1;border-color:var(--blue)">
+      <h4>ALL STRATEGIES COMBINED</h4>
+      <div class="big ${cls(o.totalPl)}">${sign(o.totalPl)}${money(o.totalPl)}</div>
+      <div class="statgrid">
+        <div><span>Win rate</span><b>${o.winRate == null ? '—' : o.winRate + '%'}</b></div>
+        <div><span>Profit factor</span><b>${pf(o.profitFactor)}</b></div>
+        <div><span>Expectancy/trade</span><b class="${cls(o.expectancy)}">${o.expectancy == null ? '—' : money(o.expectancy)}</b></div>
+        <div><span>Record (W-L)</span><b>${o.wins}-${o.losses}</b></div>
+        <div><span>Open / Closed</span><b>${o.openCount} / ${o.closedCount}</b></div>
+        <div><span>Avg win / loss</span><b>${money(o.avgWin)} / ${money(o.avgLoss)}</b></div>
+      </div>
+      ${o.whatIfCount ? `<div class="row" style="margin-top:8px"><span>“What-if” on ${o.whatIfCount} early-closed trades</span><span class="${cls(o.whatIfPl)}">would-have ${money(o.whatIfPl)}</span></div>` : ''}
+    </div>`;
+
   const cards = s.strategies.map((st) => `
     <div class="card">
       <h4>${LABELS[st.strategy]}</h4>
       <div class="big ${cls(st.totalPl)}">${sign(st.totalPl)}${money(st.totalPl)}</div>
-      <div class="row"><span>Realized</span><span class="${cls(st.realizedPl)}">${money(st.realizedPl)}</span></div>
-      <div class="row"><span>Unrealized</span><span class="${cls(st.unrealizedPl)}">${money(st.unrealizedPl)}</span></div>
-      <div class="row"><span>Open / Closed</span><span>${st.openCount} / ${st.closedCount}</span></div>
       <div class="row"><span>Win rate</span><span>${st.winRate == null ? '—' : st.winRate + '%'}</span></div>
+      <div class="row"><span>Profit factor</span><span>${pf(st.profitFactor)}</span></div>
+      <div class="row"><span>Expectancy</span><span class="${cls(st.expectancy)}">${st.expectancy == null ? '—' : money(st.expectancy)}</span></div>
+      <div class="row"><span>Open / Closed</span><span>${st.openCount} / ${st.closedCount}</span></div>
     </div>`).join('');
 
   const acct = s.account && !s.account.error
@@ -84,12 +110,13 @@ function renderOverview() {
          ${s.account.mocked ? '<div class="row"><span>mode</span><span>mock</span></div>' : ''}</div>`
     : '';
 
-  $('#view').innerHTML = `<div class="cards">${cards}${acct}</div>
+  $('#view').innerHTML = `<div class="cards">${overallCard}${cards}${acct}</div>
     <div class="section-title">How to read this</div>
     <div class="card" style="color:var(--muted);font-size:13px">
-      Each strategy runs on its own $1,000,000 book and risks $500 per trade. “Total P&amp;L” =
-      realized (closed trades) + unrealized (open trades marked to live price). Click a strategy tab
-      to see its open positions and trade history.
+      Each strategy runs on its own $1,000,000 book, risks $500 per trade, and flattens at 2:55&nbsp;PM Central.
+      <b>Profit factor</b> = gross wins ÷ gross losses (above 1 = profitable; 2+ is strong).
+      <b>Expectancy</b> = average $ made per closed trade. <b>What-if</b> shows what trades you closed early
+      <i>would</i> have done if left to hit their target/stop.
     </div>`;
 }
 
@@ -102,10 +129,12 @@ function renderStrategy(name) {
         <div class="card"><h4>${LABELS[name]} — Total P&amp;L</h4><div class="big ${cls(st.totalPl)}">${sign(st.totalPl)}${money(st.totalPl)}</div>
           <div class="row"><span>Realized</span><span class="${cls(st.realizedPl)}">${money(st.realizedPl)}</span></div>
           <div class="row"><span>Unrealized</span><span class="${cls(st.unrealizedPl)}">${money(st.unrealizedPl)}</span></div></div>
-        <div class="card"><h4>Book equity</h4><div class="big">${money(st.equity)}</div>
-          <div class="row"><span>Start</span><span>${money(st.startingBalance)}</span></div></div>
+        <div class="card"><h4>Quality</h4><div class="big">${pf(st.profitFactor)}</div>
+          <div class="row"><span>Profit factor</span><span>${pf(st.profitFactor)}</span></div>
+          <div class="row"><span>Expectancy</span><span class="${cls(st.expectancy)}">${st.expectancy == null ? '—' : money(st.expectancy)}</span></div></div>
         <div class="card"><h4>Record</h4><div class="big">${st.wins}-${st.losses}</div>
           <div class="row"><span>Win rate</span><span>${st.winRate == null ? '—' : st.winRate + '%'}</span></div>
+          <div class="row"><span>Avg win / loss</span><span>${money(st.avgWin)} / ${money(st.avgLoss)}</span></div>
           <div class="row"><span>Open</span><span>${st.openCount}</span></div></div>
       </div>`;
 
@@ -135,7 +164,7 @@ function openTable(rows) {
 function closedTable(rows) {
   if (!rows.length) return '<div class="table-wrap"><div class="empty">No closed trades yet.</div></div>';
   return `<div class="table-wrap"><table><thead><tr>
-    <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Result</th><th>P&amp;L</th><th>Closed</th>
+    <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Result</th><th>P&amp;L</th><th>What-if (if held)</th><th>Closed</th>
     </tr></thead><tbody>${rows.map((t) => `<tr>
       <td><b>${t.symbol}</b></td>
       <td><span class="badge ${t.direction}">${t.direction.toUpperCase()}</span></td>
@@ -144,12 +173,24 @@ function closedTable(rows) {
       <td>${t.exitPrice ?? '—'}</td>
       <td>${reasonText(t.closeReason)}</td>
       <td class="${cls(t.realizedPl)}">${t.realizedPl == null ? '—' : sign(t.realizedPl) + money(t.realizedPl)}</td>
+      <td>${whatIfText(t)}</td>
       <td>${t.closedAt ? new Date(t.closedAt).toLocaleString() : '—'}</td>
     </tr>`).join('')}</tbody></table></div>`;
 }
 
 function reasonText(r) {
-  return { tp: '🎯 Target', sl: '🛑 Stop', canceled: '✖ Unfilled', expired: '✖ Expired', rejected: '✖ Rejected' }[r] || (r || '—');
+  return { tp: '🎯 Target', sl: '🛑 Stop', eod: '🌙 EOD close', manual: '💰 You closed', canceled: '✖ Unfilled', eod_unfilled: '✖ Unfilled', expired: '✖ Expired', rejected: '✖ Rejected' }[r] || (r || '—');
+}
+
+// Counterfactual column: only meaningful for trades closed early (manual/EOD).
+function whatIfText(t) {
+  if (!t.whatIf) return '—';
+  if (t.whatIf.status === 'watching') return '<span style="color:var(--muted)">⏳ watching…</span>';
+  const pl = t.whatIf.pl;
+  const tag = t.whatIf.outcome === 'tp' ? '🎯' : t.whatIf.outcome === 'sl' ? '🛑' : '⏱';
+  const diff = pl - (t.realizedPl || 0);
+  const hint = diff > 0 ? ` (left ${money(diff)} on the table)` : diff < 0 ? ` (saved ${money(-diff)})` : '';
+  return `<span class="${cls(pl)}">${tag} ${sign(pl)}${money(pl)}</span><span style="color:var(--muted);font-size:11px">${hint}</span>`;
 }
 
 // ── feed ────────────────────────────────────────────────────────────────────────

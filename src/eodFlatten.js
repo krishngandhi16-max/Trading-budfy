@@ -78,6 +78,8 @@ async function flattenNow(reason = 'manual') {
     store.updateTrade(t.id, {
       status: 'closed', realizedPl: realized, unrealizedPl: 0,
       closeReason: reason, closedAt: new Date().toISOString(), exitPrice: exit,
+      // Keep watching what WOULD have happened if we'd left the strategy's TP/SL alone.
+      whatIf: { status: 'watching', watchFrom: new Date().toISOString(), closePrice: exit },
     });
     store.addActivity({ strategy: t.strategy, symbol: t.symbol, kind: realized >= 0 ? 'tp' : 'sl',
       message: `EOD CLOSE ${t.symbol} (${LABELS[t.strategy] || t.strategy}) @ ~${exit} — ${realized >= 0 ? '+' : ''}$${realized}` });

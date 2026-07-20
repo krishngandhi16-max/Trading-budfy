@@ -67,6 +67,7 @@ app.get('/api/strategies', async (_req, res) => {
       startingBalance: store.STARTING_BALANCE,
     },
     account,
+    overall: store.overallStats(),
     strategies: store.allStrategyStats(),
     timestamp: new Date().toISOString(),
   });

@@ -63,6 +63,7 @@ function addTrade(trade) {
     realizedPl:    null,
     closeReason:   null,
     meta:          trade.meta || {},
+    whatIf:        null,          // counterfactual, set when closed early
     openedAt:      new Date().toISOString(),
     filledAt:      null,
     closedAt:      null,
@@ -91,33 +92,71 @@ function hasActiveTrade(strategy, symbol) {
   return getOpenTrades(strategy).some((t) => t.symbol === symbol.toUpperCase());
 }
 
-// ── per-strategy stats ───────────────────────────────────────────────────────
+// ── stats (per-strategy + overall) ───────────────────────────────────────────
 
-function strategyStats(strategy) {
-  const trades = getTrades().filter((t) => t.strategy === strategy);
+function statsFor(trades) {
   const closed = trades.filter((t) => t.status === 'closed');
   const open   = trades.filter((t) => t.status === 'open' || t.status === 'pending');
 
   const realized   = closed.reduce((s, t) => s + (t.realizedPl || 0), 0);
   const unrealized = open.reduce((s, t) => s + (t.unrealizedPl || 0), 0);
-  const wins       = closed.filter((t) => (t.realizedPl || 0) > 0).length;
+
+  const winTrades  = closed.filter((t) => (t.realizedPl || 0) > 0);
+  const lossTrades = closed.filter((t) => (t.realizedPl || 0) < 0);
+  const grossProfit = winTrades.reduce((s, t) => s + t.realizedPl, 0);
+  const grossLoss   = Math.abs(lossTrades.reduce((s, t) => s + t.realizedPl, 0));
+
+  // "would-have" P&L from trades we closed early (manual / EOD) whose what-if resolved
+  const whatIfResolved = closed.filter((t) => t.whatIf && t.whatIf.status === 'resolved');
+  const whatIfPl = whatIfResolved.reduce((s, t) => s + (t.whatIf.pl || 0), 0);
 
   return {
-    strategy,
-    startingBalance: STARTING_BALANCE,
     realizedPl:   round2(realized),
     unrealizedPl: round2(unrealized),
     totalPl:      round2(realized + unrealized),
-    equity:       round2(STARTING_BALANCE + realized + unrealized),
     openCount:    open.length,
     closedCount:  closed.length,
-    wins,
-    losses:       closed.length - wins,
-    winRate:      closed.length ? round2((wins / closed.length) * 100) : null,
+    wins:         winTrades.length,
+    losses:       lossTrades.length,
+    winRate:      closed.length ? round2((winTrades.length / closed.length) * 100) : null,
+    grossProfit:  round2(grossProfit),
+    grossLoss:    round2(grossLoss),
+    profitFactor: grossLoss > 0 ? round2(grossProfit / grossLoss) : (grossProfit > 0 ? null : 0), // null = ∞ (no losses yet)
+    avgWin:       winTrades.length ? round2(grossProfit / winTrades.length) : 0,
+    avgLoss:      lossTrades.length ? round2(grossLoss / lossTrades.length) : 0,
+    expectancy:   closed.length ? round2(realized / closed.length) : null,   // avg $ per closed trade
+    // Counterfactual: what the early-closed trades would have done if left alone
+    whatIfCount:  whatIfResolved.length,
+    whatIfPl:     round2(whatIfPl),
   };
 }
 
+function strategyStats(strategy) {
+  const trades = getTrades().filter((t) => t.strategy === strategy);
+  const s = statsFor(trades);
+  return { strategy, startingBalance: STARTING_BALANCE, equity: round2(STARTING_BALANCE + s.totalPl), ...s };
+}
+
 function allStrategyStats() { return STRATEGIES.map(strategyStats); }
+
+/** Combined stats across all three strategies. */
+function overallStats() {
+  const s = statsFor(getTrades());
+  return { strategy: 'overall', startingBalance: STARTING_BALANCE * STRATEGIES.length,
+           equity: round2(STARTING_BALANCE * STRATEGIES.length + s.totalPl), ...s };
+}
+
+// ── what-if (counterfactual) tracking ────────────────────────────────────────
+// When a trade is closed EARLY (manual flatten / EOD), we keep watching the
+// stock to see whether the strategy's original TP or SL *would* have hit.
+
+function getWhatIfWatching() {
+  return getTrades().filter((t) => t.whatIf && t.whatIf.status === 'watching');
+}
+
+function resolveWhatIf(id, outcome, pl) {
+  return updateTrade(id, { whatIf: { status: 'resolved', outcome, pl: round2(pl), resolvedAt: new Date().toISOString() } });
+}
 
 // ── activity feed ────────────────────────────────────────────────────────────
 
@@ -151,6 +190,7 @@ function round2(n) { return parseFloat(Number(n).toFixed(2)); }
 module.exports = {
   STRATEGIES, STARTING_BALANCE, RISK_PER_TRADE,
   getTrades, getOpenTrades, addTrade, updateTrade, findTradeByClientId, hasActiveTrade,
-  strategyStats, allStrategyStats,
+  strategyStats, allStrategyStats, overallStats,
+  getWhatIfWatching, resolveWhatIf,
   getActivity, addActivity,
 };
