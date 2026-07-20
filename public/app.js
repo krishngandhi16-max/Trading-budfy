@@ -179,7 +179,11 @@ function closedTable(rows) {
 }
 
 function reasonText(r) {
-  return { tp: '🎯 Target', sl: '🛑 Stop', eod: '🌙 EOD close', manual: '💰 You closed', canceled: '✖ Unfilled', eod_unfilled: '✖ Unfilled', expired: '✖ Expired', rejected: '✖ Rejected' }[r] || (r || '—');
+  return {
+    tp: '🎯 Target', sl: '🛑 Stop', eod: '🌙 EOD close', manual: '💰 You closed',
+    canceled: '✖ Unfilled', eod_unfilled: '✖ Unfilled', expired: '✖ Expired', rejected: '✖ Rejected',
+    closed_externally: '🔄 Closed elsewhere', closed_unreconciled: '❓ Closed (unmatched)',
+  }[r] || (r || '—');
 }
 
 // Counterfactual column: only meaningful for trades closed early (manual/EOD).
