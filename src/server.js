@@ -35,6 +35,9 @@ for (const [k, desc] of Object.entries(REQUIRED_VARS)) {
   const status = val ? (k === 'BROKER_ENABLED' ? `"${val}"` : '✓ set') : '✗ MISSING';
   console.log(`  ${k}: ${status}  — ${desc}`);
 }
+// Strategy Lab resolves its own keys (Alpaca_strat_key / Alpaca_strat_scret
+// preferred). Report what it actually sees so the log isn't misleading.
+console.log(`  Strategy Lab keys: ${alpaca.hasKeys() ? '✓ detected' : '✗ NOT detected'}  — set Alpaca_strat_key & Alpaca_strat_scret`);
 if (process.env.BROKER_ENABLED !== 'true') {
   console.warn('[Config] ⚠️  BROKER_ENABLED is not "true" — all orders will be mocked, no real trades will be placed');
 }
