@@ -17,7 +17,7 @@ const path = require('path');
 
 const alpaca = require('./brokers/alpaca');
 const store  = require('./store');
-const { isMarketOpen } = require('./marketHours');
+const { isMarketOpen, canOpenNewTrades } = require('./marketHours');
 
 const liquiditySweep = require('./strategies/liquiditySweep');
 const volumeProfile  = require('./strategies/volumeProfile');
@@ -55,8 +55,11 @@ async function runScanOnce({ force = false } = {}) {
     store.addActivity({ kind: 'error', message: 'No Alpaca API keys set — scanner cannot fetch data. Add ALPACA_API_KEY / ALPACA_API_SECRET in Secrets.' });
     return { ran: false, reason: 'no_keys' };
   }
-  if (!force && !isMarketOpen()) {
-    return { ran: false, reason: 'market_closed' };
+  // Only open new trades between 09:35 and 15:50 ET. Stopping 10 min before the
+  // 15:55 flatten prevents late scans from placing orders that Alpaca queues for
+  // the next day (which would then carry overnight, unflattened).
+  if (!force && !canOpenNewTrades()) {
+    return { ran: false, reason: 'outside_entry_window' };
   }
 
   const started = Date.now();
@@ -121,6 +124,10 @@ async function runScanOnce({ force = false } = {}) {
 
 async function tryPlace(sig, posByKey, ctx) {
   const { strategy, symbol, direction, entryType, entryPrice, stopLoss, takeProfit } = sig;
+
+  // Guard 0: never submit once we're past the entry window / market is closed —
+  // catches a scan that was still in flight as the cutoff/close passed.
+  if (!canOpenNewTrades() || !isMarketOpen()) return null;
 
   // Guard 1: already have an active trade for this strategy+symbol.
   if (store.hasActiveTrade(strategy, symbol)) {

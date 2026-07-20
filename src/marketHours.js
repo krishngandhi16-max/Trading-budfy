@@ -24,6 +24,18 @@ function isMarketOpen(date = new Date()) {
   return mins >= 9 * 60 + 30 && mins < 16 * 60;    // 09:30 ≤ t < 16:00 ET
 }
 
+// New trades may only be OPENED between 09:35 and 15:50 ET. The 10-minute
+// buffer before the 15:55 flatten guarantees no scan is still in flight near
+// the close and nothing new is opened after the flatten runs — which is what
+// caused positions to carry overnight (a late scan placed orders that Alpaca
+// queued for the next day, after the flatten had already fired).
+function canOpenNewTrades(date = new Date()) {
+  const { weekday, hour, minute } = nyParts(date);
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  const mins = hour * 60 + minute;
+  return mins >= 9 * 60 + 35 && mins < 15 * 60 + 50;   // 09:35 ≤ t < 15:50 ET
+}
+
 // End-of-day flatten window: 15:55–15:59 ET  ==  2:55–2:59 PM Central.
 // Everything is closed here so the account is flat before the 16:00 ET
 // (3:00 PM Central) close.
@@ -41,4 +53,4 @@ function nyDateKey(date = new Date()) {
   }).format(date);
 }
 
-module.exports = { isMarketOpen, isFlattenWindow, nyParts, nyDateKey };
+module.exports = { isMarketOpen, canOpenNewTrades, isFlattenWindow, nyParts, nyDateKey };
