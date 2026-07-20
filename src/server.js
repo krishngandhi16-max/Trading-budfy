@@ -114,6 +114,14 @@ app.post('/api/flatten-now', async (_req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Wipe all tracked trades + activity — use after switching broker accounts,
+// since old records can never reconcile against a different account's
+// positions/orders. Does NOT touch the broker; it only clears our own record.
+app.post('/api/reset-store', (_req, res) => {
+  try { store.resetAll(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/status', (_req, res) => {
   res.json({
     brokerEnabled:     process.env.BROKER_ENABLED === 'true',

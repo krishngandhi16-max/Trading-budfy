@@ -187,10 +187,24 @@ function addActivity(e) {
 
 function round2(n) { return parseFloat(Number(n).toFixed(2)); }
 
+// ── reset ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Wipe all trades + activity. Intended for switching to a fresh broker
+ * account (or clearing test data) — old records referencing an account the
+ * app no longer connects to can never reconcile against real positions, so
+ * starting clean is safer than letting them limp along as "unmatched" noise.
+ */
+function resetAll() {
+  writeTrades([]);
+  writeJson(ACTIVITY_PATH, []);
+  addActivity({ kind: 'info', message: '🗑 Strategy Lab data reset — starting fresh.' });
+}
+
 module.exports = {
   STRATEGIES, STARTING_BALANCE, RISK_PER_TRADE,
   getTrades, getOpenTrades, addTrade, updateTrade, findTradeByClientId, hasActiveTrade,
   strategyStats, allStrategyStats, overallStats,
   getWhatIfWatching, resolveWhatIf,
-  getActivity, addActivity,
+  getActivity, addActivity, resetAll,
 };
