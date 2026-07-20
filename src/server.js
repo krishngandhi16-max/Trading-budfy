@@ -8,6 +8,7 @@ const alpaca              = require('./brokers/alpaca');
 const { isMarketOpen }    = require('./marketHours');
 const { runScanOnce, startScanner } = require('./scanner');
 const { startReconciler }           = require('./reconcile');
+const { flattenNow }                = require('./eodFlatten');
 
 // Compile cryptoBot.ts first (npx tsc), then this require works
 let startCryptoBot, getCryptoBotState;
@@ -103,6 +104,12 @@ app.get('/api/positions', async (_req, res) => {
 // Force a scan pass on demand (handy for testing outside the interval).
 app.post('/api/scan-now', async (_req, res) => {
   try { res.json(await runScanOnce({ force: true })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Force an immediate flatten (close all strategy-lab positions now).
+app.post('/api/flatten-now', async (_req, res) => {
+  try { res.json(await flattenNow('manual')); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 

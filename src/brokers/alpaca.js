@@ -228,6 +228,12 @@ async function listOrders(status = 'all', limit = 500) {
   return apiFetch('GET', `/v2/orders${q}`);
 }
 
+/** Cancel a single open order by Alpaca id. No-op when broker disabled. */
+async function cancelOrder(id) {
+  if (!isEnabled()) return { mocked: true };
+  return apiFetch('DELETE', `/v2/orders/${encodeURIComponent(id)}`);
+}
+
 /** Get a single order by Alpaca id or client_order_id. */
 async function getOrder(id, byClientId = false) {
   if (!isEnabled()) return null;
@@ -287,5 +293,5 @@ async function getBars(symbols, timeframe, opts = {}) {
 
 module.exports = {
   submitOrder, closePosition, getPositions, getAccount, isEnabled, hasKeys, normaliseKey,
-  submitBracketOrder, listOrders, getOrder, getBars,
+  submitBracketOrder, listOrders, getOrder, cancelOrder, getBars,
 };

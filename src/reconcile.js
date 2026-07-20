@@ -13,6 +13,7 @@
 
 const alpaca = require('./brokers/alpaca');
 const store  = require('./store');
+const { maybeFlatten } = require('./eodFlatten');
 
 function label(strategy) {
   return {
@@ -24,6 +25,9 @@ function label(strategy) {
 
 async function reconcileOnce() {
   if (!alpaca.isEnabled()) return { ran: false, reason: 'broker_disabled' };
+
+  // End-of-day flatten runs first (once, inside the 15:55–16:00 ET window).
+  try { await maybeFlatten(); } catch (e) { console.warn('[reconcile] eod flatten:', e.message); }
 
   let orders = [], positions = [];
   try { orders = await alpaca.listOrders('all', 500); } catch (e) { console.warn('[reconcile] listOrders:', e.message); }
