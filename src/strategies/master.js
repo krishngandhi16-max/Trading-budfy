@@ -22,21 +22,18 @@ function evaluate(symbol, bars5m, barsDaily) {
   const vp = volumeProfile(bars5m, 400, 24, 70);
   if (!vp) return null;
 
+  // Master = the full-filter sweep. Take profit at opposing liquidity (PDH/PDL)
+  // with the 2.5:1 rule enforced — same effective target as the spec, but only
+  // fires when all the volume/exhaustion/value-area filters also align.
   const setup = scanLongShort(bars5m, levels.pdl, levels.pdh, {
     requireVolumeFilters: true,
-    targetMode: 'poc',
-    minRR: 0,               // POC target is not R:R-gated in Master
+    targetMode: 'pdhl',
+    minRR: 2.5,
     volSpikeX: 1.5,
     volLen: 20,
     vaLevels: vp,
   });
   if (!setup) return null;
-
-  // Guard: POC must be on the profitable side of entry, else skip.
-  const okTarget = setup.direction === 'long'
-    ? setup.takeProfit > setup.entryPrice
-    : setup.takeProfit < setup.entryPrice;
-  if (!okTarget) return null;
 
   return {
     strategy: NAME,
