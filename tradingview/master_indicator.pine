@@ -1,0 +1,323 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Master Buy/Sell — Liquidity Sweep + Volume Profile [Trading-Budfy]
+//
+// Implements the combined "Master" strategy:
+//   Filter 1 (Macro bias)   : price at/below Value Area Low for longs (at/above VAH for shorts)
+//   Filter 2 (The trap)     : sweep of the Previous Day Low (PDL) / Previous Day High (PDH)
+//   Filter 3 (Exhaustion)   : declining volume during the sweep
+//   Filter 4 (Conviction)   : 5m Break of Structure by CANDLE BODY close, with a volume spike
+//   Filter 5 (The entry)    : a Fair Value Gap forms on the reversal leg
+//   Filter 6 (Confirmation) : pullback into the FVG happens on LOW volume  →  signal fires
+//
+// Modes:
+//   "Master (all filters)"  — everything above
+//   "Liquidity Sweep only"  — sweep + BOS + FVG + pullback + R:R ≥ 2.5, no volume/VP filters
+//   "Volume Profile only"   — mean reversion: close below VAL = BUY, close above VAH = SELL
+//
+// Designed to run on a 5-minute chart. PDH/PDL come from the daily timeframe;
+// the volume profile is computed over a rolling lookback window because Pine
+// scripts cannot read TradingView's built-in Fixed Range Volume Profile.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Master Buy/Sell — Sweep + Volume Profile [Trading-Budfy]", shorttitle="Master B/S", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+mode        = input.string("Master (all filters)", "Strategy mode", options=["Master (all filters)", "Liquidity Sweep only", "Volume Profile only"])
+volLen      = input.int(20,   "Volume SMA length",                   minval=1,   group="Signal engine")
+volSpikeX   = input.float(1.5,"BOS volume spike multiplier",         minval=0.5, step=0.1, group="Signal engine")
+useRR       = input.bool(true,"Apply risk:reward filter",                        group="Signal engine")
+minRR       = input.float(2.5,"Minimum risk:reward",                 minval=0.5, step=0.1, group="Signal engine")
+fvgWaitBars = input.int(10,   "Max bars after BOS to find an FVG",   minval=1,   group="Signal engine")
+armedBars   = input.int(30,   "Max bars to wait for the FVG pullback", minval=1, group="Signal engine")
+
+vpLookback  = input.int(400,  "Lookback (bars)",  minval=50, maxval=1000, group="Volume Profile")
+vpBins      = input.int(24,   "Price rows",       minval=5,  maxval=50,   group="Volume Profile")
+vaPct       = input.float(70, "Value Area %",     minval=50, maxval=95,   group="Volume Profile")
+
+showPdhl    = input.bool(true, "Show PDH / PDL lines",   group="Display")
+showVp      = input.bool(true, "Show VAH / VAL / POC",   group="Display")
+showFvg     = input.bool(true, "Show FVG boxes",         group="Display")
+showPanel   = input.bool(true, "Show status panel",      group="Display")
+
+isMaster = mode == "Master (all filters)"
+isSweep  = mode == "Liquidity Sweep only"
+isVpOnly = mode == "Volume Profile only"
+
+// ── Higher-timeframe levels ──────────────────────────────────────────────────
+// high[1]/low[1] + lookahead_on = confirmed previous-day values, no repainting.
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+newDay = timeframe.change("D")
+
+volSma      = ta.sma(volume, volLen)
+atr         = ta.atr(14)
+hiR         = ta.highest(high, vpLookback)
+loR         = ta.lowest(low,  vpLookback)
+
+// ── Volume Profile (rolling window, typical-price binning) ───────────────────
+float poc = na
+float vah = na
+float val = na
+if bar_index >= vpLookback and hiR > loR
+    binSize = (hiR - loR) / vpBins
+    vols = array.new_float(vpBins, 0.0)
+    for i = 0 to vpLookback - 1
+        tp  = (high[i] + low[i]) / 2.0
+        idx = int(math.min(vpBins - 1, math.max(0, math.floor((tp - loR) / binSize))))
+        array.set(vols, idx, array.get(vols, idx) + volume[i])
+    int pocIdx = 0
+    float maxV = -1.0
+    float total = 0.0
+    for i = 0 to vpBins - 1
+        v = array.get(vols, i)
+        total += v
+        if v > maxV
+            maxV := v
+            pocIdx := i
+    // Expand around the POC row until the Value Area % of volume is covered.
+    int up = pocIdx + 1
+    int dn = pocIdx - 1
+    int vaTop = pocIdx
+    int vaBot = pocIdx
+    float acc = maxV
+    while acc < total * vaPct / 100.0 and (up < vpBins or dn >= 0)
+        upV = up < vpBins ? array.get(vols, up) : -1.0
+        dnV = dn >= 0     ? array.get(vols, dn) : -1.0
+        if upV >= dnV
+            acc += upV
+            vaTop := up
+            up += 1
+        else
+            acc += dnV
+            vaBot := dn
+            dn -= 1
+    poc := loR + (pocIdx + 0.5) * binSize
+    vah := loR + (vaTop + 1)   * binSize
+    val := loR + vaBot         * binSize
+
+// ── Signal state machines ────────────────────────────────────────────────────
+// States: 0 = idle · 1 = swept PDL/PDH · 2 = BOS confirmed, waiting for FVG · 3 = armed, waiting for pullback
+
+// Long side
+var int   stateL    = 0
+var float sweepLowL = na
+var float sweepHiL  = na    // highest high of the sweep leg — the structure a BOS must reclaim
+var int   bosBarL   = na
+var float fvgTopL   = na
+var float fvgBotL   = na
+var int   fvgBarL   = na
+var bool  exhaustL  = false
+var bool  biasL     = false
+var box   fvgBoxL   = na
+
+// Short side
+var int   stateS     = 0
+var float sweepHighS = na
+var float sweepLoS   = na   // lowest low of the sweep leg — the structure a BOS must break
+var int   bosBarS    = na
+var float fvgTopS    = na
+var float fvgBotS    = na
+var int   fvgBarS    = na
+var bool  exhaustS   = false
+var bool  biasS      = false
+var box   fvgBoxS    = na
+
+bool buySignal  = false
+bool sellSignal = false
+float sigStop   = na
+float sigT1     = na   // partial target (POC) — na in Liquidity Sweep mode
+float sigTarget = na
+
+closeBox(box b) =>
+    if not na(b)
+        box.set_right(b, bar_index)
+
+if newDay
+    stateL := 0
+    stateS := 0
+    closeBox(fvgBoxL)
+    closeBox(fvgBoxS)
+
+if not isVpOnly and not na(pdl) and not na(pdh)
+    // ── LONG: sweep of PDL → bullish BOS → bullish FVG → pullback ──
+    if stateL == 0 and low < pdl
+        stateL    := 1
+        sweepLowL := low
+        sweepHiL  := high
+        exhaustL  := volume <= volume[1] or volume < volSma
+        biasL     := not na(val) and close <= val
+    else if stateL == 1
+        sweepLowL := math.min(sweepLowL, low)
+        // BOS = candle BODY closes above the sweep leg's structure AND reclaims the PDL.
+        // Exhaustion/bias are read from the sweep bars BEFORE this candle — the BOS
+        // candle itself is expected to be high-volume, so it must not feed the
+        // "declining volume" check.
+        bodyBos  = close > sweepHiL and close > pdl
+        volSpike = volume > volSma * volSpikeX
+        if bodyBos and (isSweep or (volSpike and exhaustL and biasL))
+            stateL  := 2
+            bosBarL := bar_index
+        else
+            sweepHiL := math.max(sweepHiL, high)
+            if low < pdl
+                exhaustL := volume <= volume[1] or volume < volSma
+                biasL    := biasL or (not na(val) and close <= val)
+    if stateL == 2
+        if low > high[2]   // bullish Fair Value Gap
+            fvgTopL := low
+            fvgBotL := high[2]
+            fvgBarL := bar_index
+            stateL  := 3
+            if showFvg
+                fvgBoxL := box.new(bar_index - 2, fvgTopL, bar_index + armedBars, fvgBotL, border_color=color.new(color.green, 55), bgcolor=color.new(color.green, 85))
+        else if bar_index - bosBarL > fvgWaitBars
+            stateL := 0
+    if stateL == 3 and bar_index > fvgBarL
+        if close < fvgBotL                       // gap fully invalidated
+            stateL := 0
+            closeBox(fvgBoxL)
+        else if bar_index - fvgBarL > armedBars  // setup went stale
+            stateL := 0
+            closeBox(fvgBoxL)
+        else if low <= fvgTopL                   // pullback touched the gap
+            entry  = fvgTopL
+            target = isSweep ? pdh : vah
+            risk   = entry - sweepLowL
+            rr     = risk > 0 and not na(target) ? (target - entry) / risk : 0.0
+            rrOK   = not useRR or rr >= minRR
+            volOK  = not isMaster or volume < volSma
+            if rrOK and volOK
+                buySignal := true
+                sigStop   := sweepLowL
+                sigT1     := isSweep ? na : poc
+                sigTarget := target
+                stateL    := 0
+                closeBox(fvgBoxL)
+            else if not rrOK   // R:R is fixed for this setup — it can never pass
+                stateL := 0
+                closeBox(fvgBoxL)
+            // low pullback volume can still show up on a later touch → stay armed
+
+    // ── SHORT: sweep of PDH → bearish BOS → bearish FVG → pullback ──
+    if stateS == 0 and high > pdh
+        stateS     := 1
+        sweepHighS := high
+        sweepLoS   := low
+        exhaustS   := volume <= volume[1] or volume < volSma
+        biasS      := not na(vah) and close >= vah
+    else if stateS == 1
+        sweepHighS := math.max(sweepHighS, high)
+        // BOS = candle BODY closes below the sweep leg's structure AND loses the PDH.
+        // Exhaustion/bias come from the bars before the BOS candle (see long side).
+        bodyBos  = close < sweepLoS and close < pdh
+        volSpike = volume > volSma * volSpikeX
+        if bodyBos and (isSweep or (volSpike and exhaustS and biasS))
+            stateS  := 2
+            bosBarS := bar_index
+        else
+            sweepLoS := math.min(sweepLoS, low)
+            if high > pdh
+                exhaustS := volume <= volume[1] or volume < volSma
+                biasS    := biasS or (not na(vah) and close >= vah)
+    if stateS == 2
+        if high < low[2]   // bearish Fair Value Gap
+            fvgTopS := low[2]
+            fvgBotS := high
+            fvgBarS := bar_index
+            stateS  := 3
+            if showFvg
+                fvgBoxS := box.new(bar_index - 2, fvgTopS, bar_index + armedBars, fvgBotS, border_color=color.new(color.red, 55), bgcolor=color.new(color.red, 85))
+        else if bar_index - bosBarS > fvgWaitBars
+            stateS := 0
+    if stateS == 3 and bar_index > fvgBarS
+        if close > fvgTopS
+            stateS := 0
+            closeBox(fvgBoxS)
+        else if bar_index - fvgBarS > armedBars
+            stateS := 0
+            closeBox(fvgBoxS)
+        else if high >= fvgBotS
+            entry  = fvgBotS
+            target = isSweep ? pdl : val
+            risk   = sweepHighS - entry
+            rr     = risk > 0 and not na(target) ? (entry - target) / risk : 0.0
+            rrOK   = not useRR or rr >= minRR
+            volOK  = not isMaster or volume < volSma
+            if rrOK and volOK
+                sellSignal := true
+                sigStop    := sweepHighS
+                sigT1      := isSweep ? na : poc
+                sigTarget  := target
+                stateS     := 0
+                closeBox(fvgBoxS)
+            else if not rrOK
+                stateS := 0
+                closeBox(fvgBoxS)
+
+// ── Volume Profile mean-reversion mode ───────────────────────────────────────
+crossBelowVal = ta.crossunder(close, val)
+crossAboveVah = ta.crossover(close, vah)
+vpBuy  = isVpOnly and crossBelowVal
+vpSell = isVpOnly and crossAboveVah
+if vpBuy
+    buySignal := true
+    sigStop   := close - 1.5 * atr
+    sigT1     := poc
+    sigTarget := vah
+if vpSell
+    sellSignal := true
+    sigStop    := close + 1.5 * atr
+    sigT1      := poc
+    sigTarget  := val
+
+// ── Plots ────────────────────────────────────────────────────────────────────
+plot(showPdhl ? pdh : na, "PDH", color=color.new(color.green,  20), style=plot.style_stepline)
+plot(showPdhl ? pdl : na, "PDL", color=color.new(color.red,    20), style=plot.style_stepline)
+plot(showVp   ? poc : na, "POC", color=color.new(color.red,     0), linewidth=2)
+plot(showVp   ? vah : na, "VAH", color=color.new(color.blue,   30))
+plot(showVp   ? val : na, "VAL", color=color.new(color.orange, 30))
+
+// Signal labels + entry / stop-loss / take-profit lines
+drawTradeLevels(float stopPx, float t1Px, float targetPx) =>
+    line.new(bar_index, close,    bar_index + 25, close,    color=color.new(color.gray, 30),  style=line.style_dotted, width=1)
+    line.new(bar_index, stopPx,   bar_index + 25, stopPx,   color=color.new(color.red, 0),    style=line.style_dashed, width=2)
+    line.new(bar_index, targetPx, bar_index + 25, targetPx, color=color.new(color.teal, 0),   style=line.style_dashed, width=2)
+    label.new(bar_index + 25, stopPx,   "SL " + str.tostring(stopPx, format.mintick),   style=label.style_label_left, color=color.new(color.red, 20),  textcolor=color.white, size=size.small)
+    label.new(bar_index + 25, targetPx, "TP " + str.tostring(targetPx, format.mintick), style=label.style_label_left, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
+    if not na(t1Px)
+        line.new(bar_index, t1Px, bar_index + 25, t1Px, color=color.new(color.teal, 40), style=line.style_dotted, width=1)
+        label.new(bar_index + 25, t1Px, "TP1 (POC) " + str.tostring(t1Px, format.mintick), style=label.style_label_left, color=color.new(color.teal, 55), textcolor=color.white, size=size.tiny)
+
+tradeText(string side) =>
+    side + " @ " + str.tostring(close, format.mintick) + "\nSL " + str.tostring(sigStop, format.mintick) + (na(sigT1) ? "" : "\nTP1 " + str.tostring(sigT1, format.mintick)) + "\nTP " + str.tostring(sigTarget, format.mintick)
+
+if buySignal
+    label.new(bar_index, low,  tradeText("BUY"),  style=label.style_label_up,   color=color.new(color.green, 10), textcolor=color.white, size=size.small)
+    drawTradeLevels(sigStop, sigT1, sigTarget)
+if sellSignal
+    label.new(bar_index, high, tradeText("SELL"), style=label.style_label_down, color=color.new(color.red, 10),  textcolor=color.white, size=size.small)
+    drawTradeLevels(sigStop, sigT1, sigTarget)
+
+// ── Status panel ─────────────────────────────────────────────────────────────
+stateName(int s) =>
+    s == 0 ? "idle" : s == 1 ? "swept" : s == 2 ? "BOS ✓ · waiting FVG" : "ARMED · waiting pullback"
+
+var table panel = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 60))
+if showPanel and barstate.islast
+    table.cell(panel, 0, 0, "Mode",        text_color=color.gray,  text_size=size.tiny)
+    table.cell(panel, 1, 0, mode,          text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 1, "Long setup",  text_color=color.gray,  text_size=size.tiny)
+    table.cell(panel, 1, 1, isVpOnly ? "—" : stateName(stateL), text_color=color.lime,   text_size=size.tiny)
+    table.cell(panel, 0, 2, "Short setup", text_color=color.gray,  text_size=size.tiny)
+    table.cell(panel, 1, 2, isVpOnly ? "—" : stateName(stateS), text_color=color.orange, text_size=size.tiny)
+    table.cell(panel, 0, 3, "PDH / PDL",   text_color=color.gray,  text_size=size.tiny)
+    table.cell(panel, 1, 3, str.tostring(pdh, format.mintick) + " / " + str.tostring(pdl, format.mintick), text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 4, "VAH / POC / VAL", text_color=color.gray, text_size=size.tiny)
+    table.cell(panel, 1, 4, str.tostring(vah, format.mintick) + " / " + str.tostring(poc, format.mintick) + " / " + str.tostring(val, format.mintick), text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 5, "Vol vs SMA",  text_color=color.gray,  text_size=size.tiny)
+    table.cell(panel, 1, 5, str.tostring(volume / volSma, "#.##") + "×", text_color=volume > volSma ? color.lime : color.gray, text_size=size.tiny)
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+alertcondition(buySignal,  "Master BUY",  "BUY {{ticker}} {{interval}} @ {{close}} — sweep reversal / value entry")
+alertcondition(sellSignal, "Master SELL", "SELL {{ticker}} {{interval}} @ {{close}} — sweep reversal / value entry")
+alertcondition(buySignal or sellSignal, "Master BUY or SELL", "Signal on {{ticker}} {{interval}} @ {{close}}")
