@@ -46,7 +46,8 @@ check('silent before the pullback bar', s1none === null);
 console.log('Strategy 3 — Master');
 const m1 = master.evaluate('TEST', buildLongSetup({ bosVolume: 2600, pullbackVolume: 600 }), daily);
 check('fires BUY when volume spike + low-vol pullback present', m1 && m1.direction === 'long');
-check('target is POC', m1 && m1.meta.poc != null && Math.abs(m1.takeProfit - m1.meta.poc) < 0.01);
+check('target is opposing liquidity (PDH ~111)', m1 && Math.abs(m1.takeProfit - m1.meta.pdh) < 0.01);
+check('R:R >= 2.5', m1 && m1.meta.rr >= 2.5);
 const m2 = master.evaluate('TEST', buildLongSetup({ bosVolume: 1100 }), daily); // no BOS volume spike
 check('silent when BOS has no volume spike', m2 === null);
 const m3 = master.evaluate('TEST', buildLongSetup({ pullbackVolume: 5000 }), daily); // pullback high vol
@@ -63,8 +64,9 @@ vpBars.push(bar(103, 103.2, 102.8, 103, 1000));       // inside
 vpBars.push(bar(103, 103.1, 101.5, 101.6, 1200));     // fresh cross below VAL(~103)
 const v1 = vp.evaluate('TEST', vpBars, daily);
 check('fires BUY when price closes below VAL', v1 && v1.direction === 'long');
-check('target is POC (~103)', v1 && Math.abs(v1.takeProfit - v1.meta.poc) < 0.01 && v1.meta.poc > 102);
+check('target is opposite value-area edge (VAH)', v1 && Math.abs(v1.takeProfit - v1.meta.vah) < 0.01 && v1.meta.vah > v1.entryPrice);
 check('stop below entry', v1 && v1.stopLoss < v1.entryPrice);
+check('R:R >= 2.5', v1 && v1.meta.rr >= 2.5);
 // No fresh cross (already below on prev bar) → silent
 const vpBars2 = vpBars.concat([bar(101.6, 101.7, 101.0, 101.2, 1000)]);
 const v2 = vp.evaluate('TEST', vpBars2, daily);

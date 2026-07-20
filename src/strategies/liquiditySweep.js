@@ -20,9 +20,11 @@ function evaluate(symbol, bars5m, barsDaily) {
   const levels = prevDayLevels(barsDaily);
   if (!levels || !bars5m || bars5m.length < 15) return null;
 
+  // Per the spec: take profit at the OPPOSING liquidity (PDH for longs, PDL for
+  // shorts), and only take the trade if that target is >= 2.5x the stop distance.
   const setup = scanLongShort(bars5m, levels.pdl, levels.pdh, {
     requireVolumeFilters: false,
-    targetMode: 'rr',
+    targetMode: 'pdhl',
     minRR: 2.5,
   });
   if (!setup) return null;

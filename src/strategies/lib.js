@@ -171,6 +171,7 @@ function scanLongShort(bars, pdl, pdh, opts) {
 function runSide(side, bars, vols, pdl, pdh, lastIdx, opts) {
   const { requireVolumeFilters, targetMode, minRR, volSpikeX, volLen, vaLevels } = opts;
   const isLong = side === 'long';
+  const atrVal = atr(bars, 14);   // for the minimum stop-distance floor
 
   // States: 0 idle · 1 swept · 2 BOS (waiting FVG) · 3 armed (waiting pullback)
   let state = 0;
@@ -240,20 +241,25 @@ function runSide(side, bars, vols, pdl, pdh, lastIdx, opts) {
         const touched = isLong ? b.low <= fvgTop : b.high >= fvgBot;
         if (touched) {
           const entry = isLong ? fvgTop : fvgBot;
-          const risk = isLong ? entry - sweepExtreme : sweepExtreme - entry;
-          let target;
-          if (targetMode === 'poc' && vaLevels) {
-            target = vaLevels.poc;
-          } else if (targetMode === 'pdhl') {
-            target = isLong ? pdh : pdl;
-          } else {
-            target = isLong ? entry + minRR * risk : entry - minRR * risk;
-          }
-          const rr = risk > 0 ? (isLong ? (target - entry) / risk : (entry - target) / risk) : 0;
-          const rrOk = rr >= minRR || targetMode === 'poc'; // POC target isn't RR-gated
-          const volOk = !requireVolumeFilters || b.volume < volSma;
 
-          // Only act if this pullback happened on the LATEST bar (fresh signal).
+          // Stop = the swept swing extreme, but never tighter than minStopDist
+          // (wider of 1x ATR14 or 0.25% of price). Prevents penny-wide stops
+          // that get killed by noise before the trade can work.
+          const minDist = Math.max(atrVal || 0, 0.0025 * entry);
+          let stop = sweepExtreme;
+          const rawRisk = isLong ? entry - stop : stop - entry;
+          if (rawRisk < minDist) stop = isLong ? entry - minDist : entry + minDist;
+          const risk = isLong ? entry - stop : stop - entry;
+
+          // Target = opposing liquidity (PDH/PDL) or POC, per the strategy.
+          let target;
+          if (targetMode === 'poc' && vaLevels) target = vaLevels.poc;
+          else if (targetMode === 'pdhl')       target = isLong ? pdh : pdl;
+          else                                   target = isLong ? entry + minRR * risk : entry - minRR * risk;
+
+          const rr = risk > 0 ? (isLong ? (target - entry) / risk : (entry - target) / risk) : 0;
+          const rrOk = rr >= minRR;   // always enforce the 2.5:1 rule
+          const volOk = !requireVolumeFilters || b.volume < volSma;
           const fresh = i === lastIdx;
 
           if (rrOk && volOk && fresh && risk > 0 && target != null) {
@@ -261,14 +267,11 @@ function runSide(side, bars, vols, pdl, pdh, lastIdx, opts) {
               direction: side,
               entryType: 'limit',
               entryPrice: round(entry, 2),
-              stopLoss: round(sweepExtreme, 2),
+              stopLoss: round(stop, 2),
               takeProfit: round(target, 2),
               meta: { rr: round(rr, 2), fvgTop: round(fvgTop, 2), fvgBot: round(fvgBot, 2), sweepBar: bosBar },
             };
           }
-          // If RR can never pass for this setup, reset; otherwise a later touch
-          // (still same fvg) could qualify — but we only fire fresh, so reset to
-          // avoid re-arming stale setups.
           if (!rrOk) state = 0;
         }
       }

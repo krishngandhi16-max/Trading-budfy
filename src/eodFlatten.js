@@ -42,11 +42,13 @@ async function flattenNow(reason = 'manual') {
 
   const labSymbols = new Set(open.map((t) => t.symbol.toUpperCase()));
 
-  // 1. Cancel any resting orders for our symbols (unfilled entries + TP/SL legs).
+  // 1. Cancel ALL resting equity orders (unfilled entries + TP/SL legs), not just
+  //    tracked symbols — so orphaned brackets can't fire after the flatten.
+  //    Crypto orders (symbol contains "/") are left alone.
   let orders = [];
   try { orders = await alpaca.listOrders('open', 500); } catch (e) { console.warn('[eod] listOrders:', e.message); }
   for (const o of orders) {
-    if (o.symbol && labSymbols.has(o.symbol.toUpperCase())) {
+    if (o.symbol && !o.symbol.includes('/')) {
       try { await alpaca.cancelOrder(o.id); } catch (e) { console.warn('[eod] cancel', o.id, e.message); }
     }
   }
@@ -86,11 +88,27 @@ async function flattenNow(reason = 'manual') {
     closed++;
   }
 
-  if (closed > 0 || pending.length > 0) {
-    store.addActivity({ kind: 'info',
-      message: `🌙 End-of-day flatten (${reason}) — closed ${closed} position(s), canceled ${pending.length} pending. Account is flat for the night.` });
+  // Belt-and-suspenders: close EVERY remaining equity position at the broker,
+  // even ones our store isn't tracking (orphans from a desync, or a pending
+  // trade that actually filled). Crypto positions (BTC/ETH/SOL) are skipped so
+  // the crypto bot is never touched. This guarantees the account is truly flat.
+  let sweptExtra = 0;
+  let after = [];
+  try { after = await alpaca.getPositions(); } catch (e) { console.warn('[eod] getPositions (sweep):', e.message); }
+  for (const p of after) {
+    const isCrypto = (p.raw && p.raw.asset_class === 'crypto') || /[/]/.test(p.symbol);
+    if (isCrypto) continue;
+    try {
+      await alpaca.closePosition(p.symbol, 'stocks');
+      sweptExtra++;
+    } catch (e) { console.warn('[eod] sweep close', p.symbol, e.message); }
   }
-  return { ran: true, closed, canceledPending: pending.length };
+
+  if (closed > 0 || pending.length > 0 || sweptExtra > 0) {
+    store.addActivity({ kind: 'info',
+      message: `🌙 End-of-day flatten (${reason}) — closed ${closed} tracked + ${sweptExtra} extra equity position(s), canceled ${pending.length} pending. Account is flat for the night.` });
+  }
+  return { ran: true, closed, canceledPending: pending.length, sweptExtra };
 }
 
 function num(v) { const n = parseFloat(v); return Number.isFinite(n) ? n : null; }

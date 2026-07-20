@@ -24,22 +24,30 @@ function evaluate(symbol, bars5m /*, barsDaily */) {
   const a = atr(bars5m, 14);
   if (!(a > 0)) return null;
 
-  // Fresh cross below VAL → BUY (target POC)
+  const MIN_RR = 2.5;
+
+  // Mean reversion: buy when price is "cheap" (below VAL), target the FULL
+  // reversion to the opposite edge of the value area (VAH). The stop sits a
+  // noise-proof distance below (>= 1.5x ATR or 0.3% of price), and we only take
+  // the trade if the reversion is at least 2.5x the risk.
+  const stopDist = Math.max(1.5 * a, 0.003 * last.close);
+
+  // Fresh cross below VAL → BUY, target VAH
   if (last.close < vp.val && prev.close >= vp.val) {
     const entry = last.close;
-    const stop = vp.val - 1.5 * a;
-    const target = vp.poc;
-    if (target > entry && stop < entry) {
+    const stop = entry - stopDist;
+    const target = vp.vah;                 // full value-area reversion
+    if (target > entry && (target - entry) / stopDist >= MIN_RR) {
       return build(symbol, 'long', entry, stop, target, vp, a);
     }
   }
 
-  // Fresh cross above VAH → SELL (target POC)
+  // Fresh cross above VAH → SELL, target VAL
   if (last.close > vp.vah && prev.close <= vp.vah) {
     const entry = last.close;
-    const stop = vp.vah + 1.5 * a;
-    const target = vp.poc;
-    if (target < entry && stop > entry) {
+    const stop = entry + stopDist;
+    const target = vp.val;
+    if (target < entry && (entry - target) / stopDist >= MIN_RR) {
       return build(symbol, 'short', entry, stop, target, vp, a);
     }
   }
