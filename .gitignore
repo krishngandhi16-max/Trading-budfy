@@ -6,3 +6,11 @@ backtest_results.csv
 __pycache__/
 *.pyc
 scratchpad/
+
+# Strategy Lab runtime data — must NOT be tracked in git. These files are a
+# live database that grows as trades happen; if git tracks them, every
+# `git reset --hard` / redeploy checkout wipes them back to their last
+# committed (empty) state, destroying trade history even though the real
+# fills still exist at the broker.
+data/strategy_trades.json
+data/activity.json

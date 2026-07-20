@@ -97,9 +97,41 @@ async function reconcileOnce() {
         continue;
       }
 
-      // Still open → refresh unrealized PnL from the live position price.
       const pos = posByKey.get(alpaca.normaliseKey(t.symbol));
-      const cur = pos && pos.raw ? num(pos.raw.current_price) : null;
+
+      // Self-heal: the broker shows NO position for this symbol at all, but we
+      // still have it marked 'open'. This happens if it was closed by something
+      // our leg-detection above didn't catch — a manual close in Alpaca's UI,
+      // the flatten button, EOD flatten, or a request that got interrupted
+      // mid-write. Without this, the dashboard would show a trade as open
+      // forever after the broker has already closed it. Find the most recent
+      // FILLED order on the opposite side to recover the real exit price.
+      if (!pos) {
+        const closingSide = t.direction === 'long' ? 'sell' : 'buy';
+        const candidates = orders
+          .filter((o) => o.symbol === t.symbol && o.side === closingSide && o.status === 'filled')
+          .sort((a, b) => new Date(b.filled_at) - new Date(a.filled_at));
+        const fill = candidates[0];
+        const exitFill = fill ? (num(fill.filled_avg_price) ?? entryFill) : entryFill;
+        const dir = t.direction === 'long' ? 1 : -1;
+        const realized = round2((exitFill - entryFill) * t.quantity * dir);
+        store.updateTrade(t.id, {
+          status: 'closed', realizedPl: realized, unrealizedPl: 0,
+          closeReason: fill ? 'closed_externally' : 'closed_unreconciled',
+          closedAt: (fill && fill.filled_at) || new Date().toISOString(),
+          exitPrice: exitFill,
+        });
+        store.addActivity({
+          strategy: t.strategy, symbol: t.symbol, kind: realized >= 0 ? 'tp' : 'sl',
+          message: `${fill ? 'Position closed' : 'Position vanished (no matching fill found)'} ${t.symbol} (${label(t.strategy)}) @ ${exitFill} — ${realized >= 0 ? '+' : ''}$${realized}`,
+          data: { realized, source: fill ? 'matched_fill' : 'fallback' },
+        });
+        changed++;
+        continue;
+      }
+
+      // Still open → refresh unrealized PnL from the live position price.
+      const cur = pos.raw ? num(pos.raw.current_price) : null;
       if (cur != null) {
         const dir = t.direction === 'long' ? 1 : -1;
         const upl = round2((cur - entryFill) * t.quantity * dir);
