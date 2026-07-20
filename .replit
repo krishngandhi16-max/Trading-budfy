@@ -1,0 +1,7 @@
+[deployment]
+deploymentTarget = "vm"
+run = ["node", "src/server.js"]
+build = ["sh", "-c", "npx tsc --skipLibCheck"]
+
+[agent]
+expertMode = true
