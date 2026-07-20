@@ -20,16 +20,30 @@ function isEnabled() {
   return process.env.BROKER_ENABLED === 'true';
 }
 
+// Resolve the Alpaca key/secret. The Strategy Lab uses its own dedicated
+// Replit Secrets (Alpaca_strat_key / Alpaca_strat_scret — note the exact
+// names, incl. the "scret" spelling). Standard names are accepted as
+// fallbacks so the older engine / other setups keep working.
+function apiKeyId() {
+  return process.env.Alpaca_strat_key || process.env.ALPACA_API_KEY || '';
+}
+function apiSecret() {
+  return process.env.Alpaca_strat_scret
+      || process.env.ALPACA_API_SECRET
+      || process.env.ALPACA_SECRET_KEY
+      || '';
+}
+
 // Market data works with the same keys even when trading is disabled, as long
 // as keys are present. Used by the scanner to fetch bars in mock mode too.
 function hasKeys() {
-  return !!(process.env.ALPACA_API_KEY && process.env.ALPACA_API_SECRET);
+  return !!(apiKeyId() && apiSecret());
 }
 
 function headers() {
   return {
-    'APCA-API-KEY-ID':     process.env.ALPACA_API_KEY    || '',
-    'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET || '',
+    'APCA-API-KEY-ID':     apiKeyId(),
+    'APCA-API-SECRET-KEY': apiSecret(),
     'Content-Type': 'application/json',
   };
 }
