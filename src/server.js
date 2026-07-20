@@ -114,6 +114,16 @@ app.post('/api/flatten-now', async (_req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Wipe the dashboard's tracked trades + activity (fresh start after switching
+// accounts). Only clears our local records — never touches the broker.
+// (Frontend calls /api/reset-store; keep both names as aliases.)
+function handleReset(_req, res) {
+  try { res.json(store.resetAll()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+}
+app.post('/api/reset-store', handleReset);
+app.post('/api/reset-data', handleReset);
+
 // Wipe all tracked trades + activity — use after switching broker accounts,
 // since old records can never reconcile against a different account's
 // positions/orders. Does NOT touch the broker; it only clears our own record.

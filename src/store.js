@@ -35,6 +35,17 @@ function writeJson(p, data) {
 function getTrades() { return readJson(TRADES_PATH, []); }
 function writeTrades(t) { writeJson(TRADES_PATH, t); }
 
+/**
+ * Wipe all tracked trades + activity (fresh start, e.g. after switching Alpaca
+ * accounts). Does NOT touch the broker — only our local records.
+ */
+function resetAll() {
+  writeJson(TRADES_PATH, []);
+  writeJson(ACTIVITY_PATH, []);
+  addActivity({ kind: 'info', message: '🗑 Dashboard data reset — starting clean.' });
+  return { reset: true };
+}
+
 function getOpenTrades(strategy = null) {
   return getTrades().filter((t) =>
     (t.status === 'pending' || t.status === 'open') &&
@@ -203,7 +214,7 @@ function resetAll() {
 
 module.exports = {
   STRATEGIES, STARTING_BALANCE, RISK_PER_TRADE,
-  getTrades, getOpenTrades, addTrade, updateTrade, findTradeByClientId, hasActiveTrade,
+  getTrades, getOpenTrades, addTrade, updateTrade, findTradeByClientId, hasActiveTrade, resetAll,
   strategyStats, allStrategyStats, overallStats,
   getWhatIfWatching, resolveWhatIf,
   getActivity, addActivity, resetAll,
