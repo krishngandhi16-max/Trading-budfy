@@ -19,6 +19,15 @@ entry, with volume confirmation at every step.
 4. Set the chart timeframe to **5 minutes** (the engine is designed for 5m entries)
 5. Repeat with `master_strategy.pine` in a second Pine Editor tab to backtest
 
+## What you see (clean by default)
+
+Out of the box the chart shows **only** big green **BUY** / red **SELL** tags on the
+candles, plus the dashed SL/TP lines for the most recent signal. Everything else
+(PDH/PDL, VAH/VAL/POC, FVG boxes, status panel) is **hidden by default** so the
+chart isn't cluttered. **Hover over a BUY/SELL tag** to see the full plan
+(entry, SL, TP1, TP, R:R). If you want to see the levels the strategy is using,
+open the indicator settings → **Display** group and switch any of them back on.
+
 ## Alerts
 
 Right-click the chart → **Add alert** → Condition: *Master B/S* → pick

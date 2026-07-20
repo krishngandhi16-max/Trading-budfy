@@ -35,6 +35,8 @@ const REQUIRED_JSON = {
   'shadow_trades.json':   [],
   'shadow_lab.json':      {},
   'shadow_backtest.json': [],
+  'strategy_trades.json': [],   // Strategy Lab: scanner trades
+  'activity.json':        [],   // Strategy Lab: activity feed
 };
 
 // ── Env vars expected in production ──────────────────────────────────────────

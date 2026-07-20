@@ -34,10 +34,12 @@ vpLookback  = input.int(400,  "Lookback (bars)",  minval=50, maxval=1000, group=
 vpBins      = input.int(24,   "Price rows",       minval=5,  maxval=50,   group="Volume Profile")
 vaPct       = input.float(70, "Value Area %",     minval=50, maxval=95,   group="Volume Profile")
 
-showPdhl    = input.bool(true, "Show PDH / PDL lines",   group="Display")
-showVp      = input.bool(true, "Show VAH / VAL / POC",   group="Display")
-showFvg     = input.bool(true, "Show FVG boxes",         group="Display")
-showPanel   = input.bool(true, "Show status panel",      group="Display")
+// Clean by default: only BUY/SELL tags + the current trade's SL/TP show.
+// Flip any of these on to see the underlying levels the strategy uses.
+showPdhl    = input.bool(false, "Show PDH / PDL lines",   group="Display")
+showVp      = input.bool(false, "Show VAH / VAL / POC",   group="Display")
+showFvg     = input.bool(false, "Show FVG boxes",         group="Display")
+showPanel   = input.bool(false, "Show status panel",      group="Display")
 levelsMode  = input.string("Latest signal only", "SL/TP lines", options=["Latest signal only", "All signals", "Off (hover tooltip only)"], group="Display")
 lineBarsFwd = input.int(40, "SL/TP line length (bars)", minval=5, maxval=200, group="Display")
 
@@ -308,7 +310,7 @@ var label slLabelS = na
 var label tpLabelS = na
 
 if buySignal
-    label.new(bar_index, low, "BUY", style=label.style_label_up, color=color.new(color.green, 10), textcolor=color.white, size=size.small, tooltip=tradeTooltip("BUY", close, sigStop, sigT1, sigTarget))
+    label.new(bar_index, low, "BUY", style=label.style_label_up, color=color.new(color.green, 10), textcolor=color.white, size=size.normal, tooltip=tradeTooltip("BUY", close, sigStop, sigT1, sigTarget))
     if levelsMode != "Off (hover tooltip only)"
         if levelsMode == "Latest signal only"
             line.delete(slLineL)
@@ -324,7 +326,7 @@ if buySignal
             t1LineL := line.new(bar_index, sigT1, bar_index + lineBarsFwd, sigT1, color=color.new(color.teal, 45), style=line.style_dotted, width=1)
 
 if sellSignal
-    label.new(bar_index, high, "SELL", style=label.style_label_down, color=color.new(color.red, 10), textcolor=color.white, size=size.small, tooltip=tradeTooltip("SELL", close, sigStop, sigT1, sigTarget))
+    label.new(bar_index, high, "SELL", style=label.style_label_down, color=color.new(color.red, 10), textcolor=color.white, size=size.normal, tooltip=tradeTooltip("SELL", close, sigStop, sigT1, sigTarget))
     if levelsMode != "Off (hover tooltip only)"
         if levelsMode == "Latest signal only"
             line.delete(slLineS)

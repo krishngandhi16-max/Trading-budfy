@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trading-Budfy — Strategy Lab</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>📈 Strategy Lab</h1>
+    <div id="banners"></div>
+    <div class="sub">Scanning the S&amp;P 500 · risking <b>$500</b> per trade · <b>$1,000,000</b> per book</div>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="liquidity_sweep">Liquidity Sweep</button>
+    <button data-tab="volume_profile">Volume Profile</button>
+    <button data-tab="master">Master</button>
+    <button data-tab="feed">Activity</button>
+  </nav>
+
+  <main>
+    <section id="view"></section>
+    <aside id="sidefeed">
+      <h3>Live activity</h3>
+      <ul id="feed-list"></ul>
+    </aside>
+  </main>
+
+  <footer>
+    <button id="scanBtn">Run one scan now</button>
+    <span id="lastUpdate"></span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
