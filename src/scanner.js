@@ -83,6 +83,9 @@ async function runScanOnce({ force = false } = {}) {
     if (result) placed.push(result);
   }
 
+  // Resolve counterfactuals for trades we closed early, using the same bars.
+  resolveWhatIfs(bars5mBySym);
+
   const summary = {
     ran: true,
     scanned: SP500.length,
@@ -174,6 +177,55 @@ function label(strategy) {
     volume_profile:  'Volume Profile',
     master:          'Master',
   }[strategy] || strategy;
+}
+
+// ── what-if resolver ───────────────────────────────────────────────────────────
+// For each early-closed trade still "watching", scan the bars AFTER we closed it
+// to see whether its original TP or SL would have been hit first. Resolves to the
+// hypothetical P&L so the UI can show "you closed for X, it would've done Y".
+// Gives up (resolves at last price) after 3 calendar days so watches don't linger.
+
+function resolveWhatIfs(barsBySym) {
+  const watching = store.getWhatIfWatching();
+  for (const t of watching) {
+    const bars = barsBySym[t.symbol];
+    if (!bars || !bars.length) continue;
+
+    const from     = new Date(t.whatIf.watchFrom).getTime();
+    const after    = bars.filter((b) => new Date(b.time).getTime() > from);
+    if (!after.length) continue;
+
+    const entry = t.fillPrice ?? t.entryPrice;
+    const dir   = t.direction === 'long' ? 1 : -1;
+    const tp    = t.takeProfit;
+    const sl    = t.stopLoss;
+
+    let outcome = null, exit = null;
+    for (const b of after) {
+      const hitTP = t.direction === 'long' ? b.high >= tp : b.low <= tp;
+      const hitSL = t.direction === 'long' ? b.low <= sl : b.high >= sl;
+      if (hitTP && hitSL) { outcome = 'sl'; exit = sl; break; }   // pessimistic: assume stop first
+      if (hitTP)          { outcome = 'tp'; exit = tp; break; }
+      if (hitSL)          { outcome = 'sl'; exit = sl; break; }
+    }
+
+    if (outcome) {
+      const pl = (exit - entry) * t.quantity * dir;
+      store.resolveWhatIf(t.id, outcome, pl);
+      store.addActivity({
+        strategy: t.strategy, symbol: t.symbol, kind: 'info',
+        message: `WHAT-IF ${t.symbol} (${label(t.strategy)}): if held, would have ${outcome === 'tp' ? 'HIT TARGET' : 'STOPPED OUT'} for ${pl >= 0 ? '+' : ''}$${pl.toFixed(2)} (you booked ${t.realizedPl >= 0 ? '+' : ''}$${t.realizedPl})`,
+      });
+      continue;
+    }
+
+    // Give up after 3 days → resolve at the last available close.
+    if (Date.now() - from > 3 * 86400_000) {
+      const last = after[after.length - 1].close;
+      const pl = (last - entry) * t.quantity * dir;
+      store.resolveWhatIf(t.id, 'expired', pl);
+    }
+  }
 }
 
 // ── interval driver ────────────────────────────────────────────────────────────
