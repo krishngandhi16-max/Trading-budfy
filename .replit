@@ -5,3 +5,7 @@ build = ["sh", "-c", "npx tsc --skipLibCheck"]
 
 [agent]
 expertMode = true
+
+[[ports]]
+localPort = 5000
+externalPort = 80
