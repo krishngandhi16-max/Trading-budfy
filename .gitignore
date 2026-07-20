@@ -5,3 +5,4 @@ dist/
 backtest_results.csv
 __pycache__/
 *.pyc
+scratchpad/

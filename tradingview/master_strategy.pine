@@ -1,0 +1,265 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Master Strategy — Liquidity Sweep + Volume Profile [Trading-Budfy]
+//
+// Backtestable version of master_indicator.pine. Identical signal engine,
+// plus trade management:
+//   · Position size = risk % of equity ÷ (entry − stop)
+//   · Stop at the sweep extreme (or 1.5×ATR in Volume Profile mode)
+//   · Master / VP modes: 50% off at POC, rest at VAH (longs) / VAL (shorts)
+//   · Liquidity Sweep mode: single target at PDH (longs) / PDL (shorts)
+//   · Optional end-of-day flatten (defaults ON — this is a day-trading system)
+//
+// Load it on a 5-minute chart and open the Strategy Tester tab.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Master Strategy — Sweep + Volume Profile [Trading-Budfy]", shorttitle="Master Strat", overlay=true, initial_capital=25000, commission_type=strategy.commission.percent, commission_value=0.02, slippage=1, max_boxes_count=500, max_labels_count=500)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+mode        = input.string("Master (all filters)", "Strategy mode", options=["Master (all filters)", "Liquidity Sweep only", "Volume Profile only"])
+volLen      = input.int(20,   "Volume SMA length",                   minval=1,   group="Signal engine")
+volSpikeX   = input.float(1.5,"BOS volume spike multiplier",         minval=0.5, step=0.1, group="Signal engine")
+useRR       = input.bool(true,"Apply risk:reward filter",                        group="Signal engine")
+minRR       = input.float(2.5,"Minimum risk:reward",                 minval=0.5, step=0.1, group="Signal engine")
+fvgWaitBars = input.int(10,   "Max bars after BOS to find an FVG",   minval=1,   group="Signal engine")
+armedBars   = input.int(30,   "Max bars to wait for the FVG pullback", minval=1, group="Signal engine")
+
+vpLookback  = input.int(400,  "Lookback (bars)",  minval=50, maxval=1000, group="Volume Profile")
+vpBins      = input.int(24,   "Price rows",       minval=5,  maxval=50,   group="Volume Profile")
+vaPct       = input.float(70, "Value Area %",     minval=50, maxval=95,   group="Volume Profile")
+
+riskPct     = input.float(1.0, "Risk per trade (% of equity)", minval=0.1, maxval=5.0, step=0.1, group="Trade management")
+eodFlat     = input.bool(true, "Flatten at end of day",                    group="Trade management")
+eodSess     = input.session("1550-1600", "Flatten window (exchange time)", group="Trade management")
+
+isMaster = mode == "Master (all filters)"
+isSweep  = mode == "Liquidity Sweep only"
+isVpOnly = mode == "Volume Profile only"
+
+// ── Higher-timeframe levels ──────────────────────────────────────────────────
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+newDay = timeframe.change("D")
+
+volSma      = ta.sma(volume, volLen)
+atr         = ta.atr(14)
+hiR         = ta.highest(high, vpLookback)
+loR         = ta.lowest(low,  vpLookback)
+
+// ── Volume Profile (rolling window, typical-price binning) ───────────────────
+float poc = na
+float vah = na
+float val = na
+if bar_index >= vpLookback and hiR > loR
+    binSize = (hiR - loR) / vpBins
+    vols = array.new_float(vpBins, 0.0)
+    for i = 0 to vpLookback - 1
+        tp  = (high[i] + low[i]) / 2.0
+        idx = int(math.min(vpBins - 1, math.max(0, math.floor((tp - loR) / binSize))))
+        array.set(vols, idx, array.get(vols, idx) + volume[i])
+    int pocIdx = 0
+    float maxV = -1.0
+    float total = 0.0
+    for i = 0 to vpBins - 1
+        v = array.get(vols, i)
+        total += v
+        if v > maxV
+            maxV := v
+            pocIdx := i
+    int up = pocIdx + 1
+    int dn = pocIdx - 1
+    int vaTop = pocIdx
+    int vaBot = pocIdx
+    float acc = maxV
+    while acc < total * vaPct / 100.0 and (up < vpBins or dn >= 0)
+        upV = up < vpBins ? array.get(vols, up) : -1.0
+        dnV = dn >= 0     ? array.get(vols, dn) : -1.0
+        if upV >= dnV
+            acc += upV
+            vaTop := up
+            up += 1
+        else
+            acc += dnV
+            vaBot := dn
+            dn -= 1
+    poc := loR + (pocIdx + 0.5) * binSize
+    vah := loR + (vaTop + 1)   * binSize
+    val := loR + vaBot         * binSize
+
+// ── Signal state machines (same engine as master_indicator.pine) ─────────────
+var int   stateL    = 0
+var float sweepLowL = na
+var float sweepHiL  = na
+var int   bosBarL   = na
+var float fvgTopL   = na
+var float fvgBotL   = na
+var int   fvgBarL   = na
+var bool  exhaustL  = false
+var bool  biasL     = false
+
+var int   stateS     = 0
+var float sweepHighS = na
+var float sweepLoS   = na
+var int   bosBarS    = na
+var float fvgTopS    = na
+var float fvgBotS    = na
+var int   fvgBarS    = na
+var bool  exhaustS   = false
+var bool  biasS      = false
+
+bool buySignal  = false
+bool sellSignal = false
+float sigStop   = na
+float sigTarget = na
+
+if newDay
+    stateL := 0
+    stateS := 0
+
+if not isVpOnly and not na(pdl) and not na(pdh)
+    // LONG
+    if stateL == 0 and low < pdl
+        stateL    := 1
+        sweepLowL := low
+        sweepHiL  := high
+        exhaustL  := volume <= volume[1] or volume < volSma
+        biasL     := not na(val) and close <= val
+    else if stateL == 1
+        sweepLowL := math.min(sweepLowL, low)
+        bodyBos  = close > sweepHiL and close > pdl
+        volSpike = volume > volSma * volSpikeX
+        if bodyBos and (isSweep or (volSpike and exhaustL and biasL))
+            stateL  := 2
+            bosBarL := bar_index
+        else
+            sweepHiL := math.max(sweepHiL, high)
+            if low < pdl
+                exhaustL := volume <= volume[1] or volume < volSma
+                biasL    := biasL or (not na(val) and close <= val)
+    if stateL == 2
+        if low > high[2]
+            fvgTopL := low
+            fvgBotL := high[2]
+            fvgBarL := bar_index
+            stateL  := 3
+        else if bar_index - bosBarL > fvgWaitBars
+            stateL := 0
+    if stateL == 3 and bar_index > fvgBarL
+        if close < fvgBotL
+            stateL := 0
+        else if bar_index - fvgBarL > armedBars
+            stateL := 0
+        else if low <= fvgTopL
+            entry  = fvgTopL
+            target = isSweep ? pdh : vah
+            risk   = entry - sweepLowL
+            rr     = risk > 0 and not na(target) ? (target - entry) / risk : 0.0
+            rrOK   = not useRR or rr >= minRR
+            volOK  = not isMaster or volume < volSma
+            if rrOK and volOK
+                buySignal := true
+                sigStop   := sweepLowL
+                sigTarget := target
+                stateL    := 0
+            else if not rrOK
+                stateL := 0
+
+    // SHORT
+    if stateS == 0 and high > pdh
+        stateS     := 1
+        sweepHighS := high
+        sweepLoS   := low
+        exhaustS   := volume <= volume[1] or volume < volSma
+        biasS      := not na(vah) and close >= vah
+    else if stateS == 1
+        sweepHighS := math.max(sweepHighS, high)
+        bodyBos  = close < sweepLoS and close < pdh
+        volSpike = volume > volSma * volSpikeX
+        if bodyBos and (isSweep or (volSpike and exhaustS and biasS))
+            stateS  := 2
+            bosBarS := bar_index
+        else
+            sweepLoS := math.min(sweepLoS, low)
+            if high > pdh
+                exhaustS := volume <= volume[1] or volume < volSma
+                biasS    := biasS or (not na(vah) and close >= vah)
+    if stateS == 2
+        if high < low[2]
+            fvgTopS := low[2]
+            fvgBotS := high
+            fvgBarS := bar_index
+            stateS  := 3
+        else if bar_index - bosBarS > fvgWaitBars
+            stateS := 0
+    if stateS == 3 and bar_index > fvgBarS
+        if close > fvgTopS
+            stateS := 0
+        else if bar_index - fvgBarS > armedBars
+            stateS := 0
+        else if high >= fvgBotS
+            entry  = fvgBotS
+            target = isSweep ? pdl : val
+            risk   = sweepHighS - entry
+            rr     = risk > 0 and not na(target) ? (entry - target) / risk : 0.0
+            rrOK   = not useRR or rr >= minRR
+            volOK  = not isMaster or volume < volSma
+            if rrOK and volOK
+                sellSignal := true
+                sigStop    := sweepHighS
+                sigTarget  := target
+                stateS     := 0
+            else if not rrOK
+                stateS := 0
+
+crossBelowVal = ta.crossunder(close, val)
+crossAboveVah = ta.crossover(close, vah)
+if isVpOnly and crossBelowVal
+    buySignal := true
+    sigStop   := close - 1.5 * atr
+    sigTarget := vah
+if isVpOnly and crossAboveVah
+    sellSignal := true
+    sigStop    := close + 1.5 * atr
+    sigTarget  := val
+
+// ── Trade execution ──────────────────────────────────────────────────────────
+inEodWindow = not na(time(timeframe.period, eodSess, syminfo.timezone))
+canEnter    = strategy.position_size == 0 and not (eodFlat and inEodWindow)
+
+positionQty(float stopPrice) =>
+    riskPerShare = math.abs(close - stopPrice)
+    riskPerShare > 0 ? math.max(1, math.floor(strategy.equity * riskPct / 100.0 / riskPerShare)) : 0
+
+if buySignal and canEnter
+    qty = positionQty(sigStop)
+    if qty > 0
+        strategy.entry("Long", strategy.long, qty=qty)
+        t1 = isSweep ? sigTarget : poc
+        if not isSweep and not na(t1) and t1 > close and sigTarget > t1
+            strategy.exit("L-T1", "Long", qty_percent=50, limit=t1, stop=sigStop)
+            strategy.exit("L-T2", "Long", limit=sigTarget, stop=sigStop)
+        else
+            strategy.exit("L-X", "Long", limit=sigTarget, stop=sigStop)
+
+if sellSignal and canEnter
+    qty = positionQty(sigStop)
+    if qty > 0
+        strategy.entry("Short", strategy.short, qty=qty)
+        t1 = isSweep ? sigTarget : poc
+        if not isSweep and not na(t1) and t1 < close and sigTarget < t1
+            strategy.exit("S-T1", "Short", qty_percent=50, limit=t1, stop=sigStop)
+            strategy.exit("S-T2", "Short", limit=sigTarget, stop=sigStop)
+        else
+            strategy.exit("S-X", "Short", limit=sigTarget, stop=sigStop)
+
+if eodFlat and inEodWindow
+    strategy.cancel_all()
+    strategy.close_all(comment="EOD flat")
+
+// ── Plots ────────────────────────────────────────────────────────────────────
+plot(pdh, "PDH", color=color.new(color.green,  20), style=plot.style_stepline)
+plot(pdl, "PDL", color=color.new(color.red,    20), style=plot.style_stepline)
+plot(poc, "POC", color=color.new(color.red,     0), linewidth=2)
+plot(vah, "VAH", color=color.new(color.blue,   30))
+plot(val, "VAL", color=color.new(color.orange, 30))
+plotshape(buySignal,  "Buy",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small)
+plotshape(sellSignal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small)

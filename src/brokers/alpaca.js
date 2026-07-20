@@ -14,9 +14,16 @@
 // ── Config ───────────────────────────────────────────────────────────────────
 
 const PAPER_HOST = 'paper-api.alpaca.markets';
+const DATA_HOST  = 'data.alpaca.markets';
 
 function isEnabled() {
   return process.env.BROKER_ENABLED === 'true';
+}
+
+// Market data works with the same keys even when trading is disabled, as long
+// as keys are present. Used by the scanner to fetch bars in mock mode too.
+function hasKeys() {
+  return !!(process.env.ALPACA_API_KEY && process.env.ALPACA_API_SECRET);
 }
 
 function headers() {
@@ -54,8 +61,8 @@ function normaliseKey(symbol) {
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
-async function apiFetch(method, path, body = null) {
-  const url  = `https://${PAPER_HOST}${path}`;
+async function apiFetch(method, path, body = null, host = PAPER_HOST) {
+  const url  = `https://${host}${path}`;
   const opts = { method, headers: headers() };
   if (body != null) opts.body = JSON.stringify(body);
 
@@ -154,4 +161,117 @@ async function getAccount() {
   };
 }
 
-module.exports = { submitOrder, closePosition, getPositions, getAccount, isEnabled, normaliseKey };
+// ── Bracket orders (entry + TP + SL) ──────────────────────────────────────────
+
+/**
+ * Submit a bracket order: an entry leg plus attached take-profit and stop-loss
+ * legs (OCO). Equities only in this app. Returns { mocked, payload } when the
+ * broker is disabled so the scanner can be dry-run and inspected.
+ *
+ * @param {Object} p
+ * @param {string} p.symbol          e.g. 'AAPL'
+ * @param {'buy'|'sell'} p.side       entry side
+ * @param {number} p.qty              whole shares (>0)
+ * @param {'market'|'limit'} p.entryType
+ * @param {number} [p.limitPrice]     required when entryType='limit'
+ * @param {number} p.takeProfit       TP limit price
+ * @param {number} p.stopLoss         SL stop price
+ * @param {string} [p.clientOrderId]  strategy-tagged id (must be unique per order)
+ * @returns {Promise<Object>}
+ */
+async function submitBracketOrder({ symbol, side, qty, entryType, limitPrice, takeProfit, stopLoss, clientOrderId }) {
+  const payload = {
+    symbol:        symbol.toUpperCase(),
+    qty:           String(qty),
+    side,
+    type:          entryType,
+    time_in_force: 'day',
+    order_class:   'bracket',
+    take_profit:   { limit_price: round2str(takeProfit) },
+    stop_loss:     { stop_price:  round2str(stopLoss) },
+  };
+  if (entryType === 'limit') payload.limit_price = round2str(limitPrice);
+  if (clientOrderId) payload.client_order_id = clientOrderId;
+
+  if (!isEnabled()) {
+    return { mocked: true, broker: 'alpaca', payload };
+  }
+  return apiFetch('POST', '/v2/orders', payload);
+}
+
+function round2str(n) { return String(parseFloat(Number(n).toFixed(2))); }
+
+// ── Order queries (fills / TP-SL leg reconciliation) ──────────────────────────
+
+/**
+ * List orders. status: 'open' | 'closed' | 'all'. Includes nested legs so the
+ * reconciler can see which bracket leg (TP or SL) filled.
+ * @returns {Promise<Array>}
+ */
+async function listOrders(status = 'all', limit = 500) {
+  if (!isEnabled()) return [];
+  const q = `?status=${status}&limit=${limit}&nested=true`;
+  return apiFetch('GET', `/v2/orders${q}`);
+}
+
+/** Get a single order by Alpaca id or client_order_id. */
+async function getOrder(id, byClientId = false) {
+  if (!isEnabled()) return null;
+  const path = byClientId
+    ? `/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(id)}`
+    : `/v2/orders/${encodeURIComponent(id)}`;
+  return apiFetch('GET', path);
+}
+
+// ── Market data (bars) ────────────────────────────────────────────────────────
+
+/**
+ * Fetch bars for many symbols at once from the Alpaca market-data API.
+ * Batches to <=100 symbols/request. Returns { SYMBOL: [ {time,open,high,low,close,volume}... ] }.
+ *
+ * @param {string[]} symbols
+ * @param {string} timeframe   Alpaca timeframe, e.g. '5Min', '1Day'
+ * @param {Object} opts        { start, end, limit, feed }
+ */
+async function getBars(symbols, timeframe, opts = {}) {
+  const out = {};
+  if (!hasKeys()) return out;              // no data without keys
+  const { start, end, limit = 1000, feed = 'iex' } = opts;
+
+  const batches = [];
+  for (let i = 0; i < symbols.length; i += 100) batches.push(symbols.slice(i, i + 100));
+
+  for (const batch of batches) {
+    const params = new URLSearchParams({
+      symbols:   batch.join(','),
+      timeframe,
+      limit:     String(limit),
+      adjustment:'raw',
+      feed,
+    });
+    if (start) params.set('start', start);
+    if (end)   params.set('end', end);
+
+    let pageToken = null;
+    do {
+      if (pageToken) params.set('page_token', pageToken);
+      const res = await apiFetch('GET', `/v2/stocks/bars?${params.toString()}`, null, DATA_HOST);
+      const barsBySym = res.bars || {};
+      for (const [sym, arr] of Object.entries(barsBySym)) {
+        if (!out[sym]) out[sym] = [];
+        for (const b of arr) {
+          out[sym].push({
+            time: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
+          });
+        }
+      }
+      pageToken = res.next_page_token || null;
+    } while (pageToken);
+  }
+  return out;
+}
+
+module.exports = {
+  submitOrder, closePosition, getPositions, getAccount, isEnabled, hasKeys, normaliseKey,
+  submitBracketOrder, listOrders, getOrder, getBars,
+};

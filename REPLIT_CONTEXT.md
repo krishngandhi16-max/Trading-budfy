@@ -56,11 +56,53 @@ Standalone TypeScript module. Does NOT use the v3 engine — it has its own scan
 
 | Key | Used by |
 |-----|---------|
-| `ALPACA_API_KEY` | both systems |
+| `ALPACA_API_KEY` | both systems + Strategy Lab |
 | `ALPACA_SECRET_KEY` | `cryptoBot.ts` |
-| `ALPACA_API_SECRET` | `brokers/alpaca.js` (v3 JS stack) |
+| `ALPACA_API_SECRET` | `brokers/alpaca.js` (v3 JS stack) + Strategy Lab |
 | `BROKER_ENABLED` | set to `"true"` to enable live paper orders |
+| `SCANNER_ENABLED` | set to `"true"` to start the S&P 500 Strategy Lab scanner |
 | `DATABASE_URL` or `PGHOST` etc. | `src/db.js` (PostgreSQL) |
+
+---
+
+## Strategy Lab (S&P 500 scanner + 3 strategy books)
+
+A self-contained system layered on top of the existing stack. Scans all ~500
+S&P 500 symbols every 4 minutes during US regular hours and runs three
+strategies independently, each placing **real Alpaca paper bracket orders**
+(entry + take-profit + stop-loss) risking a **fixed $500/trade**.
+
+**Dashboard:** open the Repl's web URL → tabs for Overview + each strategy +
+Activity feed. Live per-trade unrealized P&L, per-strategy total P&L, and an
+event feed (new trade / fill / TP / SL / skips).
+
+**Files:**
+- `src/strategies/lib.js` — shared primitives (PDH/PDL, volume profile, FVG,
+  body-close BOS, ATR). Ports the validated Pine logic; day-boundary reset.
+- `src/strategies/{liquiditySweep,volumeProfile,master}.js` — the 3 books.
+- `src/scanner.js` — 4-min scan, fixed-$500 sizing, tagged bracket orders,
+  double-entry + shared-account conflict guards.
+- `src/reconcile.js` — polls Alpaca orders/positions: pending→open→closed,
+  realized/unrealized P&L, feed events.
+- `src/store.js` — JSON store (`data/strategy_trades.json`, `data/activity.json`).
+- `src/marketHours.js` — RTH gate (09:30–16:00 ET).
+- `public/` — dashboard (vanilla HTML/CSS/JS).
+- Endpoints in `server.js`: `/api/strategies`, `/api/strategy/:name/trades`,
+  `/api/activity`, `/api/account`, `/api/positions`, `POST /api/scan-now`.
+
+**To run it live:** set `ALPACA_API_KEY`, `ALPACA_API_SECRET`,
+`BROKER_ENABLED=true`, `SCANNER_ENABLED=true` in Secrets, and set the paper
+account balance to $1,000,000 in the Alpaca paper dashboard. Without keys the
+dashboard still runs in MOCK MODE (no real orders) and shows clear banners.
+`POST /api/scan-now` (or the "Run one scan now" button) forces a single pass.
+
+**Known constraint:** the 3 books share ONE Alpaca account. If two strategies
+would take the same symbol in opposite directions, Alpaca can't hold both, so
+the scanner skips the conflicting one (logged to the feed). Per-strategy P&L is
+tracked in our own store via `client_order_id` prefixes (`strategy__SYMBOL__ts`).
+
+**Tests:** `npm test` runs `test/strategy_test.js` (13 synthetic-bar assertions
+covering each strategy's fire/no-fire cases).
 
 Note: the JS stack uses `ALPACA_API_SECRET`; the TS crypto bot uses `ALPACA_SECRET_KEY`. Both must be set.
 
