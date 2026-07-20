@@ -163,15 +163,16 @@ async function getPositions() {
  */
 async function getAccount() {
   if (!isEnabled()) {
-    return { equity: 100000, balance: 100000, currency: 'USD', mocked: true };
+    return { equity: 100000, balance: 100000, buyingPower: 100000, currency: 'USD', mocked: true };
   }
 
   const a = await apiFetch('GET', '/v2/account');
   return {
-    equity:   parseFloat(a.equity),
-    balance:  parseFloat(a.cash),
-    currency: a.currency,
-    raw:      a,
+    equity:      parseFloat(a.equity),
+    balance:     parseFloat(a.cash),
+    buyingPower: parseFloat(a.buying_power),
+    currency:    a.currency,
+    raw:         a,
   };
 }
 
