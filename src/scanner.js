@@ -29,6 +29,12 @@ const SP500 = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, '../data/sp500.json'), 'utf8')
 );
 
+// Sizing caps — stop tight-stop signals from creating enormous notional
+// positions that blow through buying power. A $500 risk on a $0.20 stop would
+// otherwise be 2,500 shares (~$155k of a single stock).
+const MAX_POSITION_PCT = 0.05;   // no single position exceeds 5% of account equity
+const BP_SAFETY        = 0.90;   // only deploy up to 90% of available buying power
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function isoDaysAgo(days) {
@@ -63,6 +69,15 @@ async function runScanOnce({ force = false } = {}) {
   try { brokerPositions = await alpaca.getPositions(); } catch { /* mock / disabled */ }
   const posByKey = new Map(brokerPositions.map((p) => [alpaca.normaliseKey(p.symbol), p]));
 
+  // Account snapshot → sizing caps + a per-pass buying-power budget so we stop
+  // placing orders once the shared account is tapped out (no more 403 spam).
+  let account = { equity: 100000, buyingPower: 100000 };
+  try { account = await alpaca.getAccount(); } catch { /* mock */ }
+  const ctx = {
+    equity: account.equity || 0,
+    budget: { remaining: Math.max(0, (account.buyingPower || 0) * BP_SAFETY) },
+  };
+
   const signals = [];
   for (const symbol of SP500) {
     const bars5m  = bars5mBySym[symbol];
@@ -79,7 +94,7 @@ async function runScanOnce({ force = false } = {}) {
 
   const placed = [];
   for (const sig of signals) {
-    const result = await tryPlace(sig, posByKey);
+    const result = await tryPlace(sig, posByKey, ctx);
     if (result) placed.push(result);
   }
 
@@ -104,7 +119,7 @@ async function runScanOnce({ force = false } = {}) {
 
 // ── place a single signal ─────────────────────────────────────────────────────
 
-async function tryPlace(sig, posByKey) {
+async function tryPlace(sig, posByKey, ctx) {
   const { strategy, symbol, direction, entryType, entryPrice, stopLoss, takeProfit } = sig;
 
   // Guard 1: already have an active trade for this strategy+symbol.
@@ -122,16 +137,28 @@ async function tryPlace(sig, posByKey) {
     return null;
   }
 
-  // Size to fixed $500 risk.
-  const qty = sizeByRisk(entryPrice, stopLoss);
+  // Sizing: start from fixed $500 risk, then cap by (a) max % of equity per
+  // position and (b) remaining buying-power budget for this pass. Taking the
+  // smaller only ever REDUCES risk below $500 — never above — so it's safe.
+  const riskQty     = sizeByRisk(entryPrice, stopLoss);
+  const capByEquity = ctx ? Math.floor((ctx.equity * MAX_POSITION_PCT) / entryPrice) : Infinity;
+  const capByBudget = ctx ? Math.floor(ctx.budget.remaining / entryPrice) : Infinity;
+  const qty = Math.max(0, Math.min(riskQty, capByEquity, capByBudget));
+
   if (qty < 1) {
-    store.addActivity({
-      strategy, symbol, kind: 'skip',
-      message: `Skipped ${symbol} (${label(strategy)}) — risk/share too large for $${store.RISK_PER_TRADE} (needs <1 share)`,
-    });
+    // Only announce if it was a real signal we had to drop for lack of funds,
+    // not the routine "stop too tight" case, to keep the feed readable.
+    if (riskQty >= 1 && capByBudget < 1) {
+      store.addActivity({ strategy, symbol, kind: 'skip',
+        message: `Skipped ${symbol} (${label(strategy)}) — account out of buying power for this scan` });
+    } else if (riskQty < 1) {
+      store.addActivity({ strategy, symbol, kind: 'skip',
+        message: `Skipped ${symbol} (${label(strategy)}) — $${store.RISK_PER_TRADE} risk needs <1 share` });
+    }
     return null;
   }
 
+  const notional      = qty * entryPrice;
   const side          = direction === 'long' ? 'buy' : 'sell';
   const clientOrderId = `${strategy}__${symbol}__${Date.now()}`;
 
@@ -149,6 +176,9 @@ async function tryPlace(sig, posByKey) {
     });
     return null;
   }
+
+  // Reserve the notional from this pass's budget so later signals don't overdraw.
+  if (ctx) ctx.budget.remaining = Math.max(0, ctx.budget.remaining - notional);
 
   const trade = store.addTrade({
     strategy, symbol, direction, entryType,
