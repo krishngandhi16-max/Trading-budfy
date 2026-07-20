@@ -35,6 +35,13 @@ $('#flattenBtn').addEventListener('click', async () => {
   $('#flattenBtn').textContent = '💰 Lock in profits';
   await refresh();
 });
+$('#resetBtn').addEventListener('click', async () => {
+  if (!confirm("Wipe ALL tracked trades and activity history?\n\nUse this after switching to a different Alpaca account — old records can never match a different account's positions. This does NOT touch your broker account, only this dashboard's memory of past trades. Cannot be undone.")) return;
+  $('#resetBtn').textContent = 'Resetting…';
+  try { await fetch('/api/reset-store', { method: 'POST' }); } catch {}
+  $('#resetBtn').textContent = '🗑 Reset data (new account)';
+  await refresh();
+});
 
 // ── data ────────────────────────────────────────────────────────────────────────
 async function refresh() {

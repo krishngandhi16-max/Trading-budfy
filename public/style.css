@@ -65,6 +65,7 @@ li .t { color: var(--muted); font-size: 11px; display: block; margin-top: 2px; }
 footer { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-top: 1px solid var(--line); }
 footer button { background: var(--blue); color: #fff; border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; }
 footer button.danger { background: var(--green); }
+footer button.ghost { background: transparent; color: var(--red); border: 1px solid var(--red); }
 footer #lastUpdate { color: var(--muted); font-size: 12px; }
 
 .statgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin-top: 10px; }
